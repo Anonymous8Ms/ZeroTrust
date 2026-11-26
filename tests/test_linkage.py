@@ -164,6 +164,85 @@ class LinkageTests(unittest.TestCase):
         self.assertEqual(distinct["anchor"], distinct["full-name"])
         self.assertNotEqual(distinct["anchor"], distinct["short"])
 
+    def test_reconnects_facility_groups_through_matching_full_name_and_birth_date(self):
+        identity = {"name": "Meera Pariksha", "dob": "1981-03-15"}
+        intake = {"uhid": "QA-41927"}
+        followup = {"uhid": "QA-62184"}
+        detections = [
+            detect("a-intake", {**identity, **intake}, hospital="Facility A"),
+            detect("a-lab", intake, hospital="Facility A"),
+            detect("b-intake", {**identity, **followup}, hospital="Facility B"),
+            detect("b-lab", followup, hospital="Facility B"),
+        ]
+        linked = link_records(detections)
+        self.assertIsNotNone(linked["a-intake"])
+        self.assertEqual(len(set(linked.values())), 1)
+        self.assertEqual(linked, link_records(reversed(detections)))
+
+        conflict = detect("b-intake", {**identity, **followup, "dob": "1981-04-15"}, hospital="Facility B")
+        split = link_records([*detections[:2], conflict, detections[3]])
+        self.assertEqual(split["a-intake"], split["a-lab"])
+        self.assertEqual(split["b-intake"], split["b-lab"])
+        self.assertNotEqual(split["a-intake"], split["b-intake"])
+
+    def test_same_facility_and_full_name_corroborate_a_local_number_alias(self):
+        intake = detect("intake", {"name": "Meera Pariksha", "mrn": "QA-18459"}, hospital="Facility A")
+        lab_fields = {"name": "मीरा परीक्षा", "uhid": "QA-18459"}
+        lab = detect("lab", lab_fields, hospital="Facility A")
+        elsewhere = detect("elsewhere", lab_fields, hospital="Facility B")
+        linked = link_records([intake, lab, elsewhere])
+        self.assertIsNotNone(linked["intake"])
+        self.assertEqual(linked["intake"], linked["lab"])
+        self.assertNotEqual(linked["intake"], linked["elsewhere"])
+
+    def test_hindi_prescription_uses_age_at_visit_and_village_to_resolve_homonyms(self):
+        name = {"name": "Meera Kapoor"}
+        patient = detect("registration", {**name, "village": "Rampur", "dob": "1980-05-10", "age": 41})
+        rival = detect("rival", {**name, "village": "Rampur", "dob": "1970-05-10", "age": 45})
+        elsewhere = detect("elsewhere", {**name, "village": "Sitapur", "dob": "1979-10-10", "age": 45})
+        prescription = detect_record(ParsedRecord(
+            "prescription", "synthetic", "doc", "text",
+            "नाम: मीरा कपूर, आयु: 45 वर्ष\nग्राम: रामपुर\nतारीख: 2025-09-03\nRx: Dolo 650 BD",
+        ))
+        # The matching registration's saved age is stale. Its DOB supports the
+        # age at the visit, while the other Rampur registration's DOB does not.
+        linked = link_records([patient, rival, elsewhere, prescription])
+        self.assertIsNotNone(linked["prescription"])
+        self.assertEqual(linked["prescription"], linked["registration"])
+        self.assertNotEqual(linked["prescription"], linked["rival"])
+        self.assertNotEqual(linked["prescription"], linked["elsewhere"])
+
+        uncertain = detect("uncertain", {**name, "village": "Rampur", "dob": "1981-05-10"})
+        linked = link_records([patient, uncertain, prescription])
+        self.assertIsNone(linked["prescription"])
+
+    def test_short_name_and_uhid_need_an_unambiguous_observed_issuer(self):
+        number = {"uhid": "QA-88821"}
+        intake = detect("intake", {**number, "name": "Meera"}, hospital="Facility A")
+        lab = detect("lab", {**number, "name": "मीरा कपूर"})
+        linked = link_records([intake, lab])
+        self.assertIsNotNone(linked["lab"])
+        self.assertEqual(linked["intake"], linked["lab"])
+
+        reused = detect("reused", {**number, "name": "Meera"}, hospital="Facility B")
+        linked = link_records([intake, reused, lab])
+        self.assertNotEqual(linked["intake"], linked["reused"])
+        self.assertIsNone(linked["lab"])
+        self.assertEqual(linked, link_records([lab, reused, intake]))
+
+    def test_phone_fragment_needs_one_corroborated_full_name_owner(self):
+        phone = {"mobile": "7000012345"}
+        patient = detect("patient", {**phone, "name": "Meera Kapoor", "dob": "1980-05-10"})
+        note = detect("note", {**phone, "name": "मीरा"})
+        linked = link_records([patient, note])
+        self.assertIsNotNone(linked["note"])
+        self.assertEqual(linked["patient"], linked["note"])
+
+        homonym = detect("homonym", {**phone, "name": "Meera Kapoor", "dob": "1970-05-10"})
+        linked = link_records([patient, homonym, note])
+        self.assertNotEqual(linked["patient"], linked["homonym"])
+        self.assertIsNone(linked["note"])
+
     def test_conflicting_national_ids_veto_shared_phone(self):
         detections = [
             detect("a", {"name": "Meera Kapoor", "phone": "7000012345", "aadhaar": "234512340909"}),

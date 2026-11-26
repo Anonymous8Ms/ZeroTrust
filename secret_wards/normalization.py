@@ -159,6 +159,13 @@ def name_form(value: str) -> tuple[str, ...]:
     return names if 0 < len(names) <= 6 and any(len(token) > 1 for token in names) else ()
 
 
+def place_form(value: str) -> tuple[str, ...]:
+    """Compare labelled places across the supported scripts."""
+    if len(value) > 80 or any(char.isdecimal() for char in value):
+        return ()
+    return tuple(_name_sound(token) for token in re.findall(r"[a-z]+", _romanize(matching_text(value))))
+
+
 def name_similarity(left: tuple[str, ...], right: tuple[str, ...]) -> int:
     """3 for equal full names, 2 for compatible initials, 1 for fragments, 0 for conflict."""
     if not left or not right:
