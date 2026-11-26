@@ -113,6 +113,7 @@ _ATTACHMENTS = {"attachment", "attachments", "document attachment"}
 _METADATA = {"metadata", "meta", "export metadata", "export meta"} | _SOURCE_PATHS | _ATTACHMENTS
 _UNKNOWN = {"none", "null", "unknown", "na", "n/a", "nil", "-", "--", "redacted", "अज्ञात"}
 _IDENTITY = {"PATIENT_NAME", "RELATIVE_NAME", "PHONE", "AADHAAR", "ABHA_NUMBER", "PAN", "UHID", "MRN", "DOB"}
+_LINKAGE_EVIDENCE = _IDENTITY | ENCOUNTER_DATES | {"AGE", "DATE", "VILLAGE"}
 _NAME_PARTS = {"FIRST_NAME", "MIDDLE_NAME", "LAST_NAME"}
 _RELATIVES = {"FATHER_NAME": "father", "MOTHER_NAME": "mother", "SPOUSE_NAME": "spouse", "RELATIVE_NAME": "relative"}
 
@@ -626,7 +627,7 @@ def detect_record(
             parts.setdefault(kind, []).append(value)
         elif kind == "RELATIVE_NAME" and role != "clinician":
             identity.append(IdentityEvidence(kind, value, role if role != "patient" else "relative"))
-        elif kind in (_IDENTITY | ENCOUNTER_DATES) and role == "patient":
+        elif kind in _LINKAGE_EVIDENCE and role == "patient":
             identity.append(IdentityEvidence(kind, value))
 
     def scan(
@@ -638,9 +639,14 @@ def detect_record(
         protected.extend(clinical)
         for target, hit_role in _select_spans(hits, clinical):
             sensitive.append(target)
-            if surface.channel == "content":
+            if surface.channel == "content" and target.kind != "VILLAGE":
                 collect(target.kind, surface.text[target.start:target.end], hit_role, surface.path)
         if surface.channel == "content":
+            # A labelled village can be inside a broader address rewrite.
+            villages = [(target, hit_role) for target, hit_role in hits if target.kind == "VILLAGE"]
+            if villages:
+                for target, hit_role in _select_spans(villages, clinical):
+                    collect(target.kind, surface.text[target.start:target.end], hit_role, surface.path)
             for match in _HOSPITAL_IN_TEXT.finditer(surface.text):
                 hospital_labels.add(match["hospital"].strip())
 
@@ -761,6 +767,7 @@ def detect_record(
                 age = _AGE_NUMBER.match(value, len(value) - len(value.lstrip()))
                 if age and age[0] != text:
                     sensitive.append(Target(kind, path, start=age.start(), end=age.end()))
+                    collect(kind, age[0], role, path)
                     continue
             if kind in DATE_KINDS and isinstance(value, str):
                 prefix = _DATE.match(value)
