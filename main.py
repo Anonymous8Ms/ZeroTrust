@@ -14,9 +14,8 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     secret = os.environ.get("RAKSHA_SECRET")
-    if not secret:
-        print("RAKSHA_SECRET is required.", file=sys.stderr)
-        return 2
+    if not secret or not secret.strip():
+        parser.error("Set RAKSHA_SECRET to a non-empty secret in your environment before running.")
     try:
         policy = load_policy(Path(__file__).resolve().parent / "config" / "policy.yaml")
         report = run_pipeline(args.input, args.output, secret.encode(), policy)

@@ -24,7 +24,16 @@ RAKSHA_SECRET=local-demo-key python3 main.py \
 Use an empty or nonexistent output directory for each run. The key above is an
 example for the bundled fixtures. Supply your own secret through the
 `RAKSHA_SECRET` environment variable for other runs and keep it out of source
-control.
+control. To generate a key for a local shell session, run:
+
+```sh
+export RAKSHA_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+python3 main.py --input tests/fixtures/input --output my_output
+```
+
+Reuse the same key when you need reproducible pseudonyms and date offsets.
+A missing or blank key causes the CLI to exit with status 2 before creating
+any output.
 
 ## Output
 
