@@ -243,6 +243,73 @@ class LinkageTests(unittest.TestCase):
         self.assertNotEqual(linked["patient"], linked["homonym"])
         self.assertIsNone(linked["note"])
 
+    def test_shared_phone_does_not_merge_conflicting_ages_at_the_visit(self):
+        fields = {"name": "Rima Chauhan", "mobile": "7000082003", "visit_date": "2026-03-18"}
+        earlier = detect("earlier", {**fields, "age": 20, "visit_date": "2021-03-18"})
+        current = detect("current", {**fields, "age": 25})
+        other = detect("other", {**fields, "age": 70})
+
+        linked = link_records([earlier, current])
+        self.assertIsNotNone(linked["current"])
+        self.assertEqual(linked["earlier"], linked["current"])
+
+        stats = LinkageDiagnostics()
+        linked = link_records([earlier, current, other], diagnostics=stats)
+        self.assertEqual(stats.shared_phones, 1)
+        self.assertFalse(linked["current"] and linked["current"] == linked["other"])
+
+    def test_scoped_number_alias_accepts_written_surname_across_scripts(self):
+        intake = detect("intake", {"name": "Aruna Rai", "mrn": "QA-82904"}, hospital="Facility A")
+        lab_fields = {"name": "अरुणा राय", "uhid": "QA-82904"}
+        lab = detect("lab", lab_fields, hospital="Facility A")
+        other_site = detect("other-site", lab_fields, hospital="Facility B")
+        linked = link_records([intake, lab, other_site])
+        self.assertIsNotNone(linked["intake"])
+        self.assertEqual(linked["intake"], linked["lab"])
+        self.assertNotEqual(linked["intake"], linked["other-site"])
+
+        initial = detect("initial", {"name": "Aruna R.", "mrn": "QA-82904"}, hospital="Facility A")
+        linked = link_records([initial, lab])
+        self.assertNotEqual(linked["initial"], linked["lab"])
+
+    def test_transliterated_vowel_ending_preserves_scoped_matches(self):
+        number = {"uhid": "QA-91001"}
+        intake = detect("intake", {**number, "name": "Suman Pandeya"}, hospital="Facility A")
+        lab_fields = {**number, "name": "सुमन पाण्डेय"}
+        lab = detect("lab", lab_fields, hospital="Facility A")
+        elsewhere = detect("elsewhere", lab_fields, hospital="Facility B")
+        linked = link_records([intake, lab, elsewhere])
+        self.assertIsNotNone(linked["intake"])
+        self.assertEqual(linked["intake"], linked["lab"])
+        self.assertNotEqual(linked["intake"], linked["elsewhere"])
+
+        names = [
+            detect(key, {**number, "name": name}, hospital="Facility A")
+            for key, name in (("kavya", "Kavya Mehta"), ("kavi", "Kavi Mehta"))
+        ]
+        linked = link_records(names)
+        self.assertNotEqual(linked["kavya"], linked["kavi"])
+
+    def test_corroborated_registration_connects_a_second_facility_group(self):
+        name = {"name": "Nila Mathur"}
+        original = {"uhid": "QA-91002", "aadhaar": "234512340909"}
+        second = {"uhid": "QA-91003"}
+        identity = {**name, "dob": "1984-06-12", "spouse": "Ajay Kapoor", "phone": "7000091023"}
+        registration = detect("registration", {**identity, **original})
+        followup = detect("followup", {**identity, **second})
+        admission = detect("admission", {**second, "name": "Nila"}, hospital="Facility B")
+        lab = detect("lab", {**name, **second})
+        detections = [registration, followup, admission, lab]
+        linked = link_records(detections)
+        self.assertIsNotNone(linked["registration"])
+        self.assertEqual(len(set(linked.values())), 1)
+        self.assertEqual(linked, link_records(reversed(detections)))
+
+        elsewhere = detect("elsewhere", {**name, **second, "dob": "1972-10-04"}, hospital="Facility C")
+        linked = link_records([*detections, elsewhere])
+        self.assertNotEqual(linked["admission"], linked["elsewhere"])
+        self.assertNotEqual(linked["registration"], linked["elsewhere"])
+
     def test_conflicting_national_ids_veto_shared_phone(self):
         detections = [
             detect("a", {"name": "Meera Kapoor", "phone": "7000012345", "aadhaar": "234512340909"}),

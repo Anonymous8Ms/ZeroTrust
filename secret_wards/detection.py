@@ -255,7 +255,10 @@ _PHONE = re.compile(
 _AADHAAR = re.compile(_EDGE + r"\d{4}([ -]?)\d{4}\1\d{4}" + _END)
 _ABHA = re.compile(_EDGE + r"\d{2}[ -]?\d{4}[ -]?\d{4}[ -]?\d{4}" + _END)
 _PAN = re.compile(_EDGE + r"[A-Z]{5}\d{4}[A-Z]" + _END, _RX)
-_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_EMAIL_LOCAL = r"[\w.+-]+"
+_EMAIL_DOMAIN = r"[\w-]+(?:\.[\w-]+)+"
+_EMAIL = re.compile(rf"{_EMAIL_LOCAL}@{_EMAIL_DOMAIN}")
+_EMAIL_SCAN = re.compile(rf"{_EMAIL_LOCAL}(?P<domain>@{_EMAIL_DOMAIN})?")
 _UUID = re.compile(
     r"(?:urn:uuid:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}" + _END,
     _RX,
@@ -289,6 +292,7 @@ _HIDDEN_LABELLED_ID = re.compile(
 )
 _BASE64_PAYLOAD = re.compile(r"[A-Za-z0-9+/_-]+={0,2}")
 _MAX_METADATA_PAYLOAD = 64 * 1024
+_MAX_METADATA_BASE64_LAYERS = 4
 _DATE = re.compile(r"\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}(?!\d)")
 _TIMESTAMP_DATE = re.compile(
     r"(?m)^[ \t]*\[?(?P<date>\d{4}[/.-]\d{1,2}[/.-]\d{1,2}|\d{1,2}[/.-]\d{1,2}[/.-](?:\d{4}|\d{2}))"
@@ -526,8 +530,13 @@ def _scan_text(
             value = match["value"]
             if sum(char.isalnum() for char in value) >= 4 and any(char.isdecimal() for char in value):
                 add_labelled_id(match)
+    if "@" in text:
+        # Consume each run of local-part characters even when no domain matches.
+        for match in _EMAIL_SCAN.finditer(text):
+            if match.start("domain") >= 0:
+                add("EMAIL", *match.span(), role)
     for pattern, kind in (
-        (_EMAIL, "EMAIL"), (_ABHA, "ABHA_NUMBER"), (_AADHAAR, "AADHAAR"),
+        (_ABHA, "ABHA_NUMBER"), (_AADHAAR, "AADHAAR"),
         (_PAN, "PAN"), (_PHONE, "PHONE"), (_BARE_ID, "MRN"),
     ):
         for match in pattern.finditer(text):
@@ -551,16 +560,24 @@ def _scan_text(
 
 
 def _sensitive_metadata_payload(surface: TextSurface, names: tuple[tuple[str, str], ...]) -> bool:
-    """Inspect one level of standalone Base64 in metadata without releasing decoded text."""
-    compact = "".join(surface.text.split())
-    if len(compact) < 24 or not _BASE64_PAYLOAD.fullmatch(compact):
-        return False
-    if len(compact) > _MAX_METADATA_PAYLOAD:
+    """Inspect nested standalone Base64 in metadata with bounded depth and size."""
+    text = surface.text
+    # A successful extra decode confirms the payload exceeds the inspection
+    # limit. Replace fields that cannot be fully inspected.
+    for _ in range(_MAX_METADATA_BASE64_LAYERS + 1):
+        compact = "".join(text.split())
+        if len(compact) < 24 or not _BASE64_PAYLOAD.fullmatch(compact):
+            break
+        if len(compact) > _MAX_METADATA_PAYLOAD:
+            return True
+        try:
+            padded = compact + "=" * (-len(compact) % 4)
+            text = b64decode(padded, altchars=b"-_", validate=True).decode("utf-8")
+        except (InvalidBase64, UnicodeDecodeError):
+            break
+    else:
         return True
-    try:
-        decoded = b64decode(compact + "=" * (-len(compact) % 4), altchars=b"-_", validate=True)
-        text = decoded.decode("utf-8")
-    except (InvalidBase64, UnicodeDecodeError):
+    if text == surface.text:
         return False
     decoded_surface = TextSurface(text, "metadata", surface.path)
     hits, clinical = _scan_text(decoded_surface, "patient", names)

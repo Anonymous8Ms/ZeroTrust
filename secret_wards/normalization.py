@@ -135,7 +135,7 @@ _TOKEN_SOUNDS = re.compile(r"chh|ch|sh|ph|[kgtdbj]h|[qwzx]")
 _SIMILAR_SOUNDS = {"chh": "c", "ch": "c", "sh": "s", "ph": "f", "q": "k", "w": "v", "z": "j", "x": "ks"}
 
 
-def _name_sound(token: str) -> str:
+def _name_sound(token: str, *, fold_final_ya: bool = False) -> str:
     if token in _MOHAMMAD:
         return "mhmd"
     sound = _TOKEN_SOUNDS.sub(
@@ -147,16 +147,41 @@ def _name_sound(token: str) -> str:
     # A final y can represent the same vowel as i or e in romanized names.
     if len(consonants) > 2 and sound.endswith("y"):
         return consonants[:-1]
+    # A transliterated vowel ending may include an inherent a after the y.
+    # Keep the consonant in shorter names where dropping it conflates names.
+    if fold_final_ya and len(consonants) > 3 and sound.endswith("ya") and sound[-3] in "aeiou":
+        return consonants[:-1]
     return consonants
 
 
-def name_form(value: str) -> tuple[str, ...]:
+def _name_tokens(value: str) -> list[str]:
     tokens = [token for token in re.findall(r"[a-z]+", _romanize(matching_text(value)))
               if token not in _TITLES]
     if len(tokens) > 1 and tokens[-1] in _FAMILIAR_SUFFIXES:
         tokens.pop()
-    names = tuple(sorted(_name_sound(token) for token in tokens))
+    return tokens
+
+
+def _phonetic_name(tokens: list[str]) -> tuple[str, ...]:
+    names = tuple(sorted(_name_sound(token, fold_final_ya=True) for token in tokens))
     return names if 0 < len(names) <= 6 and any(len(token) > 1 for token in names) else ()
+
+
+def name_form(value: str) -> tuple[str, ...]:
+    return _phonetic_name(_name_tokens(value))
+
+
+def scoped_name_forms(value: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Keep an alternate spelling for fully written names with final ai or ay."""
+    tokens = _name_tokens(value)
+    phonetic = _phonetic_name(tokens)
+    written = ()
+    if (2 <= len(tokens) <= 6 and all(len(token) > 1 for token in tokens)
+            and any(token.endswith(("ai", "ay")) for token in tokens)):
+        written = tuple(sorted(
+            re.sub(r"ay$", "ai", re.sub(r"([aeiou])\1+", r"\1", token)) for token in tokens
+        ))
+    return phonetic, written
 
 
 def place_form(value: str) -> tuple[str, ...]:

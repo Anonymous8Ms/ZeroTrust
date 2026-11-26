@@ -13,6 +13,7 @@ from typing import Optional
 from .detection import DetectionResult
 from .normalization import (
     birth_date, identifier, matching_text, name_form, name_similarity, phone_number, place_form,
+    scoped_name_forms,
 )
 
 LinkageResult = dict[str, Optional[str]]
@@ -38,17 +39,23 @@ class _Profile:
     age: int | None
     village: tuple[str, ...] | None
     observed_on: str | None
+    written_alias_names: tuple[tuple[str, ...], ...]
 
 
 def _profile(detection: DetectionResult) -> _Profile:
     names, relatives, phones, births, national_ids, local_ids = (set() for _ in range(6))
-    record_ids = set()
+    record_ids, written_alias_names = set(), set()
     ages, villages, observation_dates = set(), set(), set()
     encounter_dates = {"ADMISSION_DATE": set(), "DISCHARGE_DATE": set()}
     hospital = identifier(detection.hospital) if detection.hospital else ""
     for item in detection.identity_evidence:
         if item.kind == "PATIENT_NAME" and item.role == "patient":
-            normalized = name_form(item.value)
+            if hospital:
+                normalized, written = scoped_name_forms(item.value)
+                if written:
+                    written_alias_names.add(written)
+            else:
+                normalized = name_form(item.value)
             if normalized:
                 names.add(normalized)
         elif item.kind == "RELATIVE_NAME":
@@ -113,12 +120,12 @@ def _profile(detection: DetectionResult) -> _Profile:
     village = next(iter(villages)) if len(villages) == 1 else None
     observed_on = (
         next(iter(observation_dates))
-        if age is not None and village and len(observation_dates) == 1 else None
+        if age is not None and (village or phones) and len(observation_dates) == 1 else None
     )
     return _Profile(
         frozenset(names), frozenset(relatives), frozenset(phones), frozenset(births),
         frozenset(national_ids), frozenset(local_ids), hospital, frozenset(record_ids), encounter, named_uhid,
-        age, village, observed_on,
+        age, village, observed_on, tuple(sorted(written_alias_names)),
     )
 
 
@@ -131,10 +138,28 @@ def _same_scope_conflict(
     )
 
 
+def _conflicting_dated_ages(left: _Profile, right: _Profile) -> bool:
+    if left.age is None or right.age is None or not left.observed_on or not right.observed_on:
+        return False
+    age_difference = left.age - right.age
+    if left.observed_on == right.observed_on:
+        return abs(age_difference) > 1
+    # Calendar years approximate birthday intervals. Allow one additional year
+    # for reported ages that were rounded or recorded before a birthday.
+    year_difference = int(left.observed_on[:4]) - int(right.observed_on[:4])
+    return abs(age_difference - year_difference) > 2
+
+
 def _conflict(left: _Profile, right: _Profile) -> bool:
     if left.births and right.births and left.births.isdisjoint(right.births):
         return True
     if _same_scope_conflict(left.national_ids, right.national_ids):
+        return True
+    if (
+        left.phones & right.phones and _conflicting_dated_ages(left, right)
+        and not (left.births & right.births or left.national_ids & right.national_ids
+                 or left.local_ids & right.local_ids)
+    ):
         return True
     if left.names and right.names and not any(
         name_similarity(a, b) for a in left.names for b in right.names
@@ -191,7 +216,9 @@ def _scoped_number_aliases(profile: _Profile):
     for (scope, _), value in profile.local_ids:
         for name in profile.names:
             if name_similarity(name, name) == 3:
-                yield scope, value, *name
+                yield scope, value, "phonetic", *name
+        for name in profile.written_alias_names:
+            yield scope, value, "written", *name
 
 
 def _blocks(profile: _Profile, shared_phones: set[str]) -> Iterable[tuple[str, ...]]:
@@ -270,7 +297,7 @@ def _score(
     phone = bool((left.phones & right.phones) - shared_phones)
     if _same_scope_conflict(left.local_ids, right.local_ids) and not (dob and relative >= 2):
         return 0
-    if name == 3 and set(_scoped_number_aliases(left)).intersection(_scoped_number_aliases(right)):
+    if name >= 2 and set(_scoped_number_aliases(left)).intersection(_scoped_number_aliases(right)):
         return 88
     if (
         allow_encounter and name == 3 and (not left.hospital or not right.hospital)
@@ -317,7 +344,7 @@ def _bridge_strength(
     name = max((name_similarity(a, b) for a in left.names for b in right.names), default=0)
     if not name:
         return 0
-    if name == 3 and set(_scoped_number_aliases(left)).intersection(_scoped_number_aliases(right)):
+    if name >= 2 and set(_scoped_number_aliases(left)).intersection(_scoped_number_aliases(right)):
         return 88
     if trusted_uhid and left.named_uhid and left.named_uhid == right.named_uhid:
         return _ANCHOR_MIN_SCORE
@@ -625,6 +652,22 @@ def link_records(
     # contact whose full-name owner was split across groups on the first pass.
     _join_split_groups(profiles, edges, ambiguous, shared_phones, eligible_uhids, roots, groups)
     _join_fragmented_contacts(profiles, aliases, excluded_fragments, roots, groups)
+    # A resolved registration can corroborate a second facility's UHID once
+    # its initial ambiguity is cleared by a shared birth date or national ID.
+    corroborated_fragments = {
+        index for index in ambiguous
+        if any(
+            peer != index and (
+                profiles[index].births & profiles[peer].births
+                or profiles[index].national_ids & profiles[peer].national_ids
+            )
+            for peer in groups.get(roots[index], ())
+        )
+    }
+    if corroborated_fragments:
+        _join_scoped_uhid_fragments(
+            profiles, aliases, excluded_fragments - corroborated_fragments, roots, groups,
+        )
     repeated = Counter(aliases.values())
     result = {}
     group_keys: dict[int, str] = {}

@@ -43,7 +43,7 @@ _SAFE_STEM_WORDS = frozenset("""
     lab labs laboratory report reports rx prescription prescriptions billing bill bills
     invoice invoices registration register registrations patients patient export exports
     legacy bundle bundles fhir record records data dump dumps hospital hospitals clinic
-    health care centre center multispeciality multispecialty ward wards census log logs
+    health care centre center multispeciality multispecialty ward wards census cohort cohorts log logs
     ambulance helpdesk ticket tickets scanned scan scans consent form forms visitor
     visitors drug drugs formulary reference ranges range protocol protocols management
     readme file files misc clean bulk test tests result results attachment attachments

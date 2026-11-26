@@ -118,6 +118,27 @@ class DetectionTests(unittest.TestCase):
         self.assertEqual(birth_date("01/06/1991", False), "1991-01-06")
         self.assertEqual(birth_date("01/06/1991"), "")
 
+    def test_email_scan_keeps_offsets_after_invalid_and_adjacent_tokens(self):
+        text = (
+            "x" * 8192 + "@invalid\n"
+            "draft@triage@dept.invalid "
+            "qa+tag@clinic.invalid+backup@ops.invalid "
+            "josé@lab.invalid\n"
+            "Email: labeled@clinic.invalid\n"
+            "BP 120/80"
+        )
+        result = detect_record(ParsedRecord("r", "synthetic", "doc", "text", text))
+        self.assertEqual(
+            [text[hit.start:hit.end] for hit in result.sensitive_targets if hit.kind == "EMAIL"],
+            [
+                "triage@dept.invalid", "qa+tag@clinic.invalid", "+backup@ops.invalid",
+                "josé@lab.invalid", "labeled@clinic.invalid",
+            ],
+        )
+        self.assertIn("BP 120/80", [
+            text[hit.start:hit.end] for hit in result.protected_clinical_targets
+        ])
+
     def test_phone_offsets_and_extended_clinical_context(self):
         text = "Hospital: Demo Hospital A\nPt. Meera Kapoor\nCall +९१-७००-००१-२३४५\nC/O lower back pain; C/O Ramesh cough\n"
         result = detect_record(ParsedRecord("r", "note", "doc", "text", text))

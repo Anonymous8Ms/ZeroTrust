@@ -149,6 +149,38 @@ class PipelineTest(unittest.TestCase):
                 self.assertNotIn(word, everything)
             self.assertEqual(sum(name.startswith("file-") for name in exported), 3)
 
+    def test_keeps_neutral_cohort_paths_and_renames_identifying_names(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input"
+            site = source / "site-01"
+            site.mkdir(parents=True)
+            safe_files = {
+                "cohort.csv": "diagnosis,glucose\nmigraine,7.20\n",
+                "cohorts.tsv": "diagnosis\tglucose\nasthma\t7.40\n",
+                "cohort.json": '{"visits": [{"diagnosis": "asthma"}]}',
+                "weekly-02-cohort.txt": "BP 128/84\n",
+            }
+            for basename, content in safe_files.items():
+                (site / basename).write_text(content, encoding="utf-8")
+            identifying = site / "Meera Verma - cohort.txt"
+            identifying.write_text("BP 120/80\n", encoding="utf-8")
+
+            output = root / "output"
+            run(output, "synthetic-cohort-filename-key", source)
+            by_digest = {item["input_sha256"]: item["output"] for item in report(output)["files"]}
+            for basename in safe_files:
+                with self.subTest(basename=basename):
+                    path = f"sanitized/site-01/{basename}"
+                    digest = hashlib.sha256((site / basename).read_bytes()).hexdigest()
+                    self.assertEqual(by_digest[digest], path)
+                    self.assertTrue((output / path).is_file())
+            renamed = by_digest[hashlib.sha256(identifying.read_bytes()).hexdigest()]
+            self.assertTrue(renamed.startswith("sanitized/site-01/file-"))
+            self.assertEqual((output / renamed).read_text(encoding="utf-8"), "BP 120/80\n")
+            locations = [json.loads(line)["file"] for line in (output / "records.jsonl").read_text().splitlines()]
+            self.assertCountEqual(locations, by_digest.values())
+
     def test_numeric_mrn_is_removed_from_export_paths_and_indexes(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -468,6 +500,40 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(base64.b64decode(visits["metadata"]["opaque"], validate=True), b"[REDACTED]")
             self.assertEqual(visits["metadata"]["clinical"], safe_payload)
             self.assertEqual(visits["visits"][0]["diagnosis"], "migraine")
+
+    def test_redacts_nested_base64_metadata_and_preserves_clinical_payload(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "input"
+            source.mkdir()
+
+            private = b"MRN: SYN-NESTED-6251"
+            encoded_once = base64.b64encode(private)
+            encoded_twice = base64.urlsafe_b64encode(encoded_once).rstrip(b"=").decode("ascii")
+            clinical = base64.b64encode(base64.b64encode(
+                b"Clinical observations: BP 128/84; Hb 12.00 g/dL",
+            )).decode("ascii")
+            deeper = private
+            for _ in range(6):
+                deeper = base64.b64encode(deeper)
+            (source / "visits.json").write_text(json.dumps({
+                "metadata": {
+                    "payload": encoded_twice,
+                    "clinical": clinical,
+                    "deeper": deeper.decode("ascii"),
+                },
+                "visits": [{"diagnosis": "migraine"}],
+            }), encoding="utf-8")
+
+            output = root / "out"
+            run(output, "synthetic-nested-metadata-key", source)
+            released = json.loads((output / "sanitized" / "visits.json").read_text("utf-8"))
+            metadata = released["metadata"]
+            redacted = base64.b64encode(b"[REDACTED]").decode("ascii")
+            for field in ("payload", "deeper"):
+                self.assertTrue(metadata[field] == redacted, f"{field} was not redacted")
+            self.assertEqual(metadata["clinical"], clinical)
+            self.assertEqual(released["visits"][0]["diagnosis"], "migraine")
 
     def test_preserves_doctor_specialty_without_protecting_patient_text_in_parentheses(self):
         with TemporaryDirectory() as folder:
