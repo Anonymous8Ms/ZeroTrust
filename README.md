@@ -54,6 +54,15 @@ directory, the CLI returns a failure status if every file is quarantined.
 2. **Apply policy and export.** Generate keyed pseudonyms and date offsets,
    apply age and location rules, and write the export and audit reports.
 
+Two fail-closed rules protect against quiet leaks. **Filenames:** a file keeps its
+name only when every word in the stem is a known document or operations term
+(`secret_wards/file_io.py`); any other name is hash-renamed and the new name is
+recorded in `report.json` and `records.jsonl`. **Birth dates:** a DOB is never
+shifted, because a shifted DOB still reveals the birth year. It is dropped where the
+record already carries an age band, and otherwise generalised to a birth-year band
+as wide as the age band (a plain year in FHIR `birthDate`, which must stay a valid
+date).
+
 [The privacy policy](config/policy.yaml) defines the age-band width, date-shift
 range and location mappings. Linked records receive a consistent date offset
 per patient. Unlinked records receive an offset scoped to the encounter so
