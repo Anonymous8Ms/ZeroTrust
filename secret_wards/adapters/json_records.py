@@ -89,6 +89,11 @@ def get(tree, path):
     return tree
 
 
+def _has_patient_column(row):
+    patient_fields = {"patientid", "patientname", "patientref", "uhid", "hospitaluhid", "mrn"}
+    return any(re.sub(r"[\W_]+", "", key.casefold()) in patient_fields for key in row)
+
+
 def record_roots(content, paths, limit):
     if paths is None:
         if isinstance(content, list):
@@ -104,10 +109,15 @@ def record_roots(content, paths, limit):
                     path = (*prefix, key)
                     if isinstance(value, dict):
                         pending.append((path, value))
-                    elif (key.casefold() in {"records", "visits", "patients", "encounters"}
-                          and isinstance(value, list) and value
-                          and all(isinstance(record, dict) for record in value)):
-                        arrays.append((path, len(value)))
+                    elif isinstance(value, list) and value:
+                        name = key.casefold()
+                        if name in {"records", "visits", "patients", "encounters"}:
+                            if all(isinstance(row, dict) for row in value):
+                                arrays.append((path, len(value)))
+                        elif name == "results" and all(
+                            isinstance(row, dict) and _has_patient_column(row) for row in value
+                        ):
+                            arrays.append((path, len(value)))
             if len(arrays) > 1:
                 raise Reject("ambiguous_record_collections")
             if arrays:
