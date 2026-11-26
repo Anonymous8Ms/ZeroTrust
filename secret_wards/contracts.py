@@ -5,7 +5,7 @@ from pathlib import Path as FilePath
 from typing import Literal
 
 Path = tuple[str | int, ...]
-Kind = Literal["identifier", "patient_name", "date", "age", "location", "protected"]
+Kind = Literal["identifier", "patient_name", "date", "age", "location", "attachment", "protected"]
 
 
 class Quarantine(Exception):

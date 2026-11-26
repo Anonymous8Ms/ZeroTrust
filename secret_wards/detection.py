@@ -68,36 +68,40 @@ def _rules(groups: dict[str, str]) -> dict[str, str]:
 
 
 _LABELS = _rules({
-    "PATIENT_NAME": "patient|name|patient name|patient s name|name of patient|name patient|full name|pt name|beneficiary name|नाम|मरीज|मरीज़|रोगी|मरीज का नाम|मरीज़ का नाम|रोगी का नाम",
+    "PATIENT_NAME": "patient|name|patient name|patient s name|name of patient|name patient|full name|pt name|beneficiary name|naam|नाम|मरीज|मरीज़|रोगी|मरीज का नाम|मरीज़ का नाम|रोगी का नाम",
     "FIRST_NAME": "first|first name|firstname|given|given name|पहला नाम",
     "MIDDLE_NAME": "middle|middle name|middlename",
     "LAST_NAME": "last|last name|lastname|surname|family|family name|उपनाम",
-    "RELATIVE_NAME": "relative|relative name|guardian|guardian name|attendant name|care of|family member|अभिभावक|रिश्तेदार का नाम",
+    "RELATIVE_NAME": "relative|relative name|guardian|guardian name|attendant|attendant name|caller|caregiver|pita pati ka naam|care of|family member|अभिभावक|रिश्तेदार का नाम",
     "FATHER_NAME": "father|father name|fathers name|father s name|s o|पिता का नाम|पिता",
     "MOTHER_NAME": "mother|mother name|mothers name|mother s name|माता का नाम|माता",
     "SPOUSE_NAME": "spouse|spouse name|husband|husband name|wife name|w o|पति|पति का नाम|पत्नी का नाम",
     "RELATION": "relation|relationship|relative relation|रिश्ता|संबंध",
     "PHONE": "phone|phone number|telephone|mobile|mobile no|mobile number|contact|contact no|contact number|cell|whatsapp|फोन|फ़ोन|फोन नंबर|मोबाइल|मोबाइल नंबर|दूरभाष|संपर्क",
-    "ADDRESS": "address|full address|postal address|residential address|home address|street|address line|house no|house number|mohalla|पता|घर का पता|मोहल्ला",
-    "VILLAGE": "village|gram|gram mohalla|ग्राम|गांव|गाँव",
+    "ADDRESS": "address|full address|postal address|residential address|home address|street|address note|address line|house no|house number|mohalla|pata|पता|घर का पता|मोहल्ला",
+    "VILLAGE": "village|gram|gram mohalla|village mohalla|gaon|ग्राम|गांव|गाँव",
     "TEHSIL": "tehsil|taluk|block|तहसील",
-    "DISTRICT": "district|distt|dist|location|जिला|ज़िला",
+    "DISTRICT": "district|distt|dist|jila|location|जिला|ज़िला",
     "PIN": "pin|pincode|pin code|zip|postal code|पिन|पिन कोड",
     "AADHAAR": "aadhaar|aadhar|adhaar|adhar|aadhar no|aadhaar no|aadhaar number|uidai|आधार|आधार संख्या",
     "ABHA_NUMBER": "abha|abha id|abha no|abha number|health id|आभा|आभा संख्या",
     "PAN": "pan|pan no|pan number|पैन|पैन नंबर",
     "MRN": "mrn|mrn no|medical record no|medical record number|medical record id|एमआरएन",
-    "UHID": "uhid|uhid no|hospital id|patient id|registration id|registration no|यूएचआईडी|पंजीकरण संख्या",
-    "INSURANCE_ID": "insurance|insurance no|insurance id|claim id|policy id|policy no|policy number|member id|tpa id|बीमा आईडी|बीमा संख्या|पॉलिसी नंबर",
-    "DOB": "dob|d o b|birthdate|birth date|birthdate|date of birth|जन्म तिथि|जन्म तारीख|जन्मतिथि",
-    "AGE": "age|age years|उम्र|आयु",
+    "UHID": "uhid|uhid no|hospital id|hospital uhid|patient id|patient ref|registration id|registration no|registration number|reg no|यूएचआईडी|पंजीकरण सं|पंजीकरण संख्या",
+    "ENCOUNTER_ID": "ipd no|ipd number|ipd id|visit no|visit number|visit id|encounter id|आईपीडी सं|आईपीडी संख्या",
+    "INSURANCE_ID": "insurance|insurance no|insurance id|claim id|claim no|policy id|policy no|policy number|member id|tpa id|pmjay id|बीमा आईडी|बीमा संख्या|पॉलिसी नंबर",
+    "REFERENCE_NAME": "patient reference display",
+    "DOB": "dob|d o b|birthdate|birth date|birthdate|date of birth|janm tithi|जन्म तिथि|जन्म तारीख|जन्मतिथि",
+    "AGE": "age|age years|umar|उम्र|आयु",
     "DATE": "admission|admission date|admit date|admitted|discharge|discharge date|discharged|visit date|registration date|reg date|registered|registered on|collection date|admitted on|discharged on|प्रवेश|भर्ती|छुट्टी|भर्ती की तिथि|छुट्टी की तिथि",
     "EMAIL": "email|e mail|email address|ईमेल",
     "HOSPITAL": "hospital|hospital name|facility|facility name|अस्पताल|अस्पताल का नाम",
     "DOCTOR": "doctor|doctor name|physician|dr|consultant|clinician|practitioner|attending|डॉक्टर|चिकित्सक",
     "CLINICAL": "diagnosis|diagnoses|complaint|complaints|symptom|symptoms|procedure|procedures|medication|medications|medicines|medicine|drug|dose|dosage|frequency|rx|vitals|bp|pulse|hr|temperature|spo2|hba1c|hb|hemoglobin|creatinine|glucose|lab value|lab result|result|length of stay|los|निदान|दवा|शिकायत|खुराक",
 })
-_METADATA = {"metadata", "meta", "source path", "source file", "file name", "filename", "export path", "attachment", "attachments"}
+_SOURCE_PATHS = {"source path", "source file", "file name", "filename", "export path"}
+_ATTACHMENTS = {"attachment", "attachments", "document attachment"}
+_METADATA = {"metadata", "meta", "export metadata", "export meta"} | _SOURCE_PATHS | _ATTACHMENTS
 _UNKNOWN = {"none", "null", "unknown", "na", "n/a", "nil", "-", "--", "redacted", "अज्ञात"}
 _IDENTITY = {"PATIENT_NAME", "RELATIVE_NAME", "PHONE", "AADHAAR", "ABHA_NUMBER", "PAN", "UHID", "MRN", "DOB"}
 _NAME_PARTS = {"FIRST_NAME", "MIDDLE_NAME", "LAST_NAME"}
@@ -115,7 +119,7 @@ _LABEL_IN_TEXT = re.compile(
     _EDGE + r"(" + "|".join(
         re.escape(label) for label in sorted(_LABELS, key=lambda label: (-len(label), label))
         if label not in {"dr", "s o", "w o"}
-    ) + r")\s*[:=：]\s*(?=\S)", _RX,
+    ) + r")\.?(?:[ \t]*\((?:attendant|guardian|caregiver|patient)\))?\s*[:=：]\s*(?=\S)", _RX,
 )
 _RELATION_IN_TEXT = re.compile(
     _EDGE + r"(?P<marker>[sdwc]\s*/\s*o|[sdwc]\s*\.\s*o\.?|son of|daughter of|wife of|husband of|care of|पुत्री?|पत्नी|पुत्र वधू)\s*[:：]?[ \t]+",
@@ -138,6 +142,7 @@ _NAME_STOP = {
     "uhid", "abha", "aadhaar", "bp", "pulse", "temperature", "doctor", "dr",
     "admitted", "visited", "presents", "presented", "diagnosis", "dx", "rx",
     "for", "with", "from", "ka", "ki", "ko", "has", "on", "reports",
+    "ji", "sahab", "saheb", "sahib", "didi", "bhai", "जी", "साहब", "दीदी",
     "नाम", "आयु", "उम्र", "पता", "का", "की", "को", "है", "दवा", "बीपी",
 }
 _DOCTOR = re.compile(_EDGE + rf"(?:dr\.?|doctor|डॉ\.?|डॉक्टर)[ \t]+(?P<name>{_NAME})", _RX)
@@ -154,6 +159,44 @@ _HINGLISH_NAME = re.compile(
 )
 _TITLED_NAME = re.compile(_EDGE + rf"(?P<name>{_TITLE}[ \t]+{_NAME})", _RX)
 _FRAGMENT = re.compile(rf"(?m)^[ \t]*(?P<name>{_NAME})[ \t]*,[ \t]*(?=[sdw]\s*/\s*o\b)", _RX)
+_CALLER = re.compile(
+    _EDGE + rf"(?:called|reported|brought|accompanied)[ \t]+by[ \t:]+(?P<name>{_NAME})",
+    _RX,
+)
+_ATTENDANT = re.compile(
+    rf"(?m)^[ \t]*(?:\d{{1,2}}:\d{{2}}[ \t]*[-–—][ \t]*)?(?P<name>{_NAME})"
+    r"[ \t]*\([ \t]*(?:attendant|guardian|relative|caregiver|family member)\b",
+    _RX,
+)
+_CHAT_SENDER = re.compile(
+    rf"(?m)^[ \t]*\[\d{{1,2}}[/.-]\d{{1,2}}[/.-]\d{{2,4}},[ \t]*"
+    rf"\d{{1,2}}:\d{{2}}[ \t]*(?:am|pm)?\][ \t]*(?P<name>{_NAME})[ \t]*:",
+    _RX,
+)
+_ENCOUNTER_NAME = re.compile(
+    rf"(?m)^[ \t]*(?:report of[ \t]+|\d{{1,2}}:\d{{2}}[ \t]*[-–—][ \t]*)"
+    rf"(?P<name>{_NAME})(?=[ \t]+(?:\d{{1,3}}[ \t]*y\b|[-–—][ \t]*K/C/O\b))",
+    _RX,
+)
+_PATIENT_IN_NOTE = re.compile(
+    r"(?m)^[ \t]*(?:\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}[ \t]+)?"
+    r"(?:\d{1,2}:\d{2}[ \t]*[-–—][ \t]*)?"
+    rf"(?P<name>{_NAME})(?=[ \t]+(?:ka[ \t]+BP\b|को[ \t]+\d+[ \t]+दिन\b))",
+    _RX,
+)
+_PROGRESS_SUBJECT = re.compile(
+    r"(?m)(?:^|(?<=[.!?]))[ \t]*"
+    r"(?P<name>[A-Za-z\u0900-\u0963]+(?:[ \t]+[A-Za-z\u0900-\u0963]+){1,4})"
+    r"(?=[ \t]+(?:ki[ \t]+(?:condition|tabiyat)|की[ \t]+हालत)\b)",
+    _RX,
+)
+_SAMPLE_SUBJECT = re.compile(
+    _EDGE + rf"sample[ \t]+received[ \t]+from[ \t]+(?P<name>{_NAME})(?=['’]s[ \t]+attendant\b)",
+    _RX,
+)
+_NARRATIVE_SUBJECT = re.compile(
+    rf">[ \t]*(?P<name>{_NAME}),[ \t]*(?P<age>\d{{1,3}})(?=[ \t]*(?:y|yrs?|years?)\b)", _RX,
+)
 _PHONE_SEPARATOR = r"[ .–-]?"
 _PHONE_PREFIX = rf"(?:\+?[9९][1१]{_PHONE_SEPARATOR}|[0०]{{2}}[9९][1१]{_PHONE_SEPARATOR}|[0०]{_PHONE_SEPARATOR})?"
 _PHONE = re.compile(
@@ -171,9 +214,13 @@ _CODE = r"[A-Z0-9\u0966-\u096f][A-Z0-9\u0966-\u096f./_-]{1,31}(?![A-Z0-9\u0966-\
 _CODE_VALUE = re.compile(_CODE, _RX)
 _VALUE_PATTERNS = {
     "PHONE": _PHONE, "AADHAAR": _AADHAAR, "ABHA_NUMBER": _ABHA, "PAN": _PAN,
-    "MRN": _CODE_VALUE, "UHID": _CODE_VALUE, "INSURANCE_ID": _CODE_VALUE, "EMAIL": _EMAIL,
+    "MRN": _CODE_VALUE, "UHID": _CODE_VALUE, "ENCOUNTER_ID": _CODE_VALUE,
+    "INSURANCE_ID": _CODE_VALUE, "EMAIL": _EMAIL,
 }
-_BARE_ID = re.compile(_EDGE + r"(?:[A-Z]{2,8}[/\-]\d{2}[/\-]\d{3,10})" + _END, _RX)
+_BARE_ID = re.compile(
+    _EDGE + r"(?:[A-Z]{2,8}[-/](?:\d{2,4}[-/]\d{3,10}|\d{5,10})|[A-Z]{2,8}\d{6,10})" + _END,
+    _RX,
+)
 _LABELLED_ID = re.compile(
     _EDGE + rf"(?P<label>mrn|uhid|patient id|hospital id|registration no\.?|claim id|policy no\.?|insurance id)"
     rf"[ \t]*[:=#]?[ \t]+(?P<value>{_CODE})", _RX,
@@ -344,12 +391,25 @@ def _scan_text(
         if bounds:
             add("RELATIVE_NAME", *bounds, _relation(match["marker"]))
 
-    for pattern in (_FRAGMENT, _HINGLISH_NAME, _TITLED_NAME, _UNPUNCTUATED_NAME):
-        for match in pattern.finditer(text):
+    for kind, name_role, patterns in (
+        ("RELATIVE_NAME", "relative", (_CALLER, _ATTENDANT, _CHAT_SENDER)),
+        ("PATIENT_NAME", role, (
+            _FRAGMENT, _HINGLISH_NAME, _TITLED_NAME, _UNPUNCTUATED_NAME,
+            _ENCOUNTER_NAME, _PATIENT_IN_NOTE, _PROGRESS_SUBJECT, _SAMPLE_SUBJECT,
+        )),
+    ):
+        for pattern in patterns:
+            for match in pattern.finditer(text):
+                bounds = _span_name(text, *match.span("name"))
+                if bounds:
+                    add(kind, *bounds, name_role)
+
+    if surface.label == "FHIR narrative":
+        for match in _NARRATIVE_SUBJECT.finditer(text):
             bounds = _span_name(text, *match.span("name"))
             if bounds:
-                add("PATIENT_NAME", *bounds, role)
-
+                add("REFERENCE_NAME", *bounds)
+                add("AGE", *match.span("age"))
     for match in _DATE_LABEL.finditer(text):
         date_match = _DATE.match(text, match.end())
         if date_match:
@@ -367,8 +427,13 @@ def _scan_text(
         for match in pattern.finditer(text):
             if kind != "PHONE" or phone_number(match[0]):
                 add(kind, *match.span(), role)
-    for match in _ADDRESS.finditer(text):
-        add("ADDRESS", *match.span(), role)
+    for line in re.finditer(r"(?m)^[^\r\n]+", text):
+        address_parts = list(_ADDRESS.finditer(line[0]))
+        for part in address_parts:
+            add("ADDRESS", line.start() + part.start(), line.start() + part.end(), role)
+        if (len(address_parts) >= 2 and line[0].count(",") >= 2
+                and not line[0][:address_parts[0].start()].strip()):
+            add("ADDRESS", *line.span(), role)
     for kind, name in known_names:
         words = re.findall(_WORD, name)
         if len(words) < 2:
@@ -480,6 +545,21 @@ def detect_record(
             ), relation)
             system = value.get("system")
             is_phone = isinstance(system, str) and system.casefold() in {"phone", "sms", "fax"}
+            reference = value.get("reference")
+            patient_reference = isinstance(reference, str) and (
+                bool(re.search(r"(?:^|/)(?:Patient|RelatedPerson)/", reference))
+                or (record.format == "fhir" and label in {"subject", "patient", "beneficiary"}
+                    and reference.startswith("urn:"))
+            )
+            extension_url = value.get("url")
+            relative_extension = ""
+            if record.format == "fhir" and label == "extension" and isinstance(extension_url, str):
+                field = _label(extension_url.rsplit("/", 1)[-1])
+                if _kind(field) in _RELATIVES:
+                    relative_extension = field
+            encoded_attachment = label in _ATTACHMENTS or resource_type == "Binary" or (
+                isinstance(value.get("contentType"), str) and "data" in value
+            )
             for key, item in reversed(list(value.items())):
                 if not isinstance(key, str):
                     continue
@@ -491,8 +571,16 @@ def detect_record(
                         name for name in ("aadhaar", "abha", "pan", "mrn", "uhid", "insurance")
                         if isinstance(system, str) and re.search(rf"\b{name}\b", system, _RX)
                     ), "uhid")
-                if key == "text" and label == "name" and "resourceType" not in value:
+                if key in {"text", "local", "latin", "native", "english", "hindi"} and label == "name":
                     child_label = "name"
+                if key == "display" and patient_reference:
+                    child_label = "patient reference display"
+                if key == "valueString" and relative_extension:
+                    child_label = relative_extension
+                if key in {"data", "base64", "payload"} and encoded_attachment:
+                    child_label = "encoded attachment data"
+                if key == "source" and label == "meta" and record.format == "fhir":
+                    child_label = "source path"
                 if key == "id" and resource_type == "Patient":
                     child_label = "uhid"
                 if key in {"text", "line", "city", "district", "state"} and label == "address":
@@ -508,6 +596,12 @@ def detect_record(
             continue
         text = str(value).strip()
         if not text or matching_text(text) in _UNKNOWN:
+            continue
+        if label == "encoded attachment data" and isinstance(value, str):
+            sensitive.append(Target("ATTACHMENT_DATA", path, "metadata"))
+            continue
+        if label in _SOURCE_PATHS and isinstance(value, str):
+            sensitive.append(Target("SOURCE_PATH", path, "metadata"))
             continue
         if channel != "content":
             if isinstance(value, str):
@@ -541,7 +635,10 @@ def detect_record(
             if text:
                 collect(target_kind, text, evidence_role, name_path)
         elif isinstance(value, str):
-            scan(TextSurface(value, path=path), role)
+            surface_label = None
+            if record.format == "fhir" and path[-2:] == ("text", "div"):
+                surface_label = "FHIR narrative"
+            scan(TextSurface(value, path=path, label=surface_label), role)
 
     for (_, role), parts in name_parts.items():
         words = [word for kind in ("FIRST_NAME", "MIDDLE_NAME", "LAST_NAME") for word in parts.get(kind, ())]

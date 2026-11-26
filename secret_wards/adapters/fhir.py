@@ -323,6 +323,32 @@ def _set_consistent(tree, path, replacement, explicit):
     container[path[-1]] = replacement
 
 
+def resource_id_spans(tree, edited_ids):
+    """Find ID substrings the reference writer will update when it changes a resource ID."""
+    resources = _resources(tree)
+    index = ReferenceIndex(resources, tree["resourceType"] == "Bundle")
+    changed = {path[:-1] for path in edited_ids}
+    spans = {}
+    for path in changed:
+        resource = resources.get(path)
+        if resource and resource.base:
+            url = _match(_REST, resource.full_url)
+            end = url.end(2)
+            spans[path[:-1] + ("fullUrl",)] = (end - len(resource.node["id"]), end)
+    for path, source, mode, value, _ in _reference_fields(tree, resources):
+        if mode != "literal":
+            continue
+        target = index.literal(source, value)
+        if target not in changed:
+            continue
+        if value.startswith("#") and value != "#":
+            spans[path] = (1, len(value))
+        elif match := _match(_REST, value):
+            end = match.end(2)
+            spans[path] = (end - len(resources[target].node["id"]), end)
+    return spans
+
+
 def rewrite_references(original, rewritten, explicit):
     old = _resources(original)
     new = _resources(rewritten, check_urls=False)

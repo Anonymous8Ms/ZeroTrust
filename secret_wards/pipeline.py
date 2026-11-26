@@ -6,6 +6,8 @@ import re
 from time import perf_counter
 
 from .adapters import FieldEdit, FilenameEdit, HeaderEdit, KeyEdit, SpanEdit
+from .adapters.fhir import resource_id_spans
+from .adapters.json_records import get
 from .contracts import (
     DetectionResult as PolicyDetection, ParsedRecord, Quarantine, Target,
 )
@@ -17,6 +19,10 @@ from .privacy import Policy, build_plan, derive
 from .reporting import write_reports
 
 _LOCATIONS = {"VILLAGE", "TEHSIL", "DISTRICT", "PIN"}
+_INDEX_FIELDS = {
+    "by name": "name", "by patient name": "name", "by uhid": "uhid",
+    "by mrn": "mrn", "by patient id": "patient id",
+}
 _SAFE_PART = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}")
 _RESERVED = {"CON", "PRN", "AUX", "NUL"} | {
     f"{prefix}{i}" for prefix in ("COM", "LPT") for i in range(1, 10)
@@ -50,9 +56,11 @@ class WorkItem:
 
 def json_keys(value, path=()):
     if isinstance(value, dict):
+        parent = path[-1] if path and isinstance(path[-1], str) else ""
+        label = _INDEX_FIELDS.get(re.sub(r"[_-]+", " ", parent).casefold())
         for key, child in value.items():
             target = (*path, key)
-            yield TextSurface(key, "key", target)
+            yield TextSurface(key, "key", target, label)
             yield from json_keys(child, target)
     elif isinstance(value, list):
         for index, child in enumerate(value):
@@ -111,18 +119,38 @@ def policy_plan(record, detection, group, secret, policy):
     targets = []
     slot = None
     fhir_id = None
+    resource_ids = {}
+    if record.format == "fhir":
+        for hit in detection.sensitive_targets:
+            if hit.channel in {"header", "key", "filename"} or hit.path[-1:] != ("id",):
+                continue
+            resource = get(record.content, hit.path[:-1])
+            if isinstance(resource, Mapping) and "resourceType" in resource:
+                resource_ids[hit.path] = resource["resourceType"]
+    managed_spans = resource_id_spans(record.content, resource_ids) if resource_ids else {}
+    edited_ids = set()
     for hit in detection.sensitive_targets:
         if hit.channel in {"header", "key", "filename"}:
             continue
         value = extract(record, hit)
-        kind = {"PATIENT_NAME": "patient_name", "DATE": "date", "DOB": "date",
-                "AGE": "age"}.get(hit.kind, "location" if hit.kind in _LOCATIONS else "identifier")
+        kind = {
+            "PATIENT_NAME": "patient_name", "DATE": "date", "DOB": "date",
+            "AGE": "age", "ATTACHMENT_DATA": "attachment",
+        }.get(hit.kind, "location" if hit.kind in _LOCATIONS else "identifier")
         span = (hit.start, hit.end) if hit.start is not None else None
+        managed = managed_spans.get(hit.path)
+        if span and managed and managed[0] <= span[0] and span[1] <= managed[1]:
+            continue
+        if hit.path in resource_ids:
+            if hit.path in edited_ids:
+                continue
+            edited_ids.add(hit.path)
+            value, span = get(record.content, hit.path), None
         target = Target(hit.path, kind, value, span)
         targets.append(target)
         if hit.channel == "content" and kind == "patient_name" and slot is None:
             slot = target
-        if record.format == "fhir" and span is None and hit.path and hit.path[-1] == "id":
+        if resource_ids.get(hit.path) == "Patient":
             fhir_id = target
         if hit.channel == "content" and slot is None and record.format == "fhir":
             if hit.path and hit.path[-1] == "value" and hit.kind in {"UHID", "MRN"}:
@@ -130,7 +158,7 @@ def policy_plan(record, detection, group, secret, policy):
     if slot is None:
         slot = fhir_id
     if group is not None and slot is None:
-        slot = next((t for t in targets if t.kind == "identifier"), None)
+        slot = next((t for t in targets if t.kind == "identifier" and t.path not in resource_ids), None)
     for hit in detection.protected_clinical_targets:
         span = (hit.start, hit.end) if hit.start is not None else None
         targets.append(Target(hit.path, "protected", "", span))
@@ -142,9 +170,11 @@ def policy_plan(record, detection, group, secret, policy):
     for edit in plan.edits:
         target, replacement = edit.target, edit.replacement
         if target.span is None:
-            if record.format == "fhir" and target.path and target.path[-1] == "id":
+            if target.path in resource_ids:
                 if not (target == slot and plan.patient):
                     replacement = "id-" + opaque(secret, "fhir-id", target.value)
+            if record.format == "fhir" and target.path[-2:] == ("meta", "source"):
+                replacement = "urn:secret-wards:" + opaque(secret, "fhir-source", target.value)
             edits.append(FieldEdit(target.path, replacement))
         else:
             edits.append(SpanEdit(target.path, *target.span, replacement))
@@ -165,7 +195,7 @@ def policy_plan(record, detection, group, secret, policy):
 def filename_surfaces(relative: Path):
     for index, part in enumerate(relative.parts):
         probe = Path(part).stem if index == len(relative.parts) - 1 else part
-        yield TextSurface(probe.replace("_", " ").replace("-", " "), "filename", (index,))
+        yield TextSurface(probe, "filename", (index,))
 
 
 def safe_path(item, relative, secret):
