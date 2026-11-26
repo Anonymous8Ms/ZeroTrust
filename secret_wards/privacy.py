@@ -8,7 +8,9 @@ from pathlib import Path
 
 from .normalization import birth_date, date_order_hint, matching_text
 
-from .contracts import DetectionResult, Edit, Quarantine, RewritePlan, Target
+from .contracts import (
+    REDACTED_ATTACHMENT_DATA, DetectionResult, Edit, Quarantine, RewritePlan, Target,
+)
 
 
 @dataclass(frozen=True)
@@ -96,7 +98,7 @@ def build_plan(
         elif target.kind == "location":
             value = policy.locations.get(target.value, "[REGION WITHHELD]")
         elif target.kind == "attachment":
-            value = base64.b64encode(b"[REDACTED]").decode("ascii")
+            value = REDACTED_ATTACHMENT_DATA
         else:
             value = "[REDACTED]"
         edits.append(Edit(target, value))
