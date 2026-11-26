@@ -298,6 +298,37 @@ def validate_fhir(root):
         raise Reject("invalid_fhir") from None
 
 
+def patient_managing_organization(root):
+    """Return the name of the Organization the Patient explicitly references."""
+    resources = _resources(root)
+    patient = next((item for item in resources.values()
+                    if item.node["resourceType"] == "Patient"), None)
+    if patient is None:
+        return None
+    managing = patient.node.get("managingOrganization")
+    if not isinstance(managing, dict):
+        return None
+    reference = managing.get("reference")
+    if not isinstance(reference, str) or not reference:
+        return None
+    index = ReferenceIndex(resources, root["resourceType"] == "Bundle")
+    target = index.literal(patient, reference)
+    if target is None or resources[target].node["resourceType"] != "Organization":
+        return None
+    # A different explicit issuer makes a single facility scope unsafe.
+    identifiers = patient.node.get("identifier", [])
+    if isinstance(identifiers, dict):
+        identifiers = [identifiers]
+    for entry in identifiers:
+        if isinstance(entry, dict) and "assigner" in entry:
+            assigner = entry["assigner"]
+            literal = assigner.get("reference") if isinstance(assigner, dict) else None
+            if not isinstance(literal, str) or index.literal(patient, literal) != target:
+                return None
+    name = resources[target].node.get("name")
+    return name.strip() if isinstance(name, str) and name.strip() else None
+
+
 def _updated_literal(value, before, after):
     if value == "#":
         return value
