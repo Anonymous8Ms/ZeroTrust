@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from ._edits import apply_value, group_values
 from ._errors import Reject
+from ..contracts import REDACTED_ATTACHMENT_DATA
 
 
 def _object(pairs):
@@ -42,6 +43,42 @@ def parse_json(text):
         return value
     except (ValueError, ArithmeticError, RecursionError):
         raise Reject("malformed_json") from None
+
+
+# Payloads in these fields are opaque to the text detector.
+_ATTACHMENT_KEYS = {"attachment", "attachments", "valueattachment", "photo", "presentedform"}
+_PAYLOAD_KEYS = {"data", "content", "body", "payload"}
+_ENCODED_KEYS = {"base64", "database64", "contentbase64", "encodeddata", "attachmentdata"}
+_DATA_URI = re.compile(r"^\s*data:[^,\s]*,", re.IGNORECASE)
+
+
+def reject_opaque_attachments(value):
+    """Reject residual opaque payloads before any export is staged on disk."""
+    pending = [(value, False)]
+    while pending:
+        node, attachment = pending.pop()
+        if isinstance(node, dict):
+            fields = {_field_name(key): child for key, child in node.items()}
+            attachment = attachment or fields.get("resourcetype") == "Binary"
+            has_media_type = "contenttype" in fields
+            for key, child in node.items():
+                field = _field_name(key)
+                payload = field in _ENCODED_KEYS or (
+                    field in _PAYLOAD_KEYS and (attachment or (has_media_type and isinstance(child, str)))
+                )
+                if payload and child not in (None, "", REDACTED_ATTACHMENT_DATA):
+                    raise Reject("embedded_attachment")
+                nested_attachment = attachment and isinstance(child, (dict, list))
+                pending.append((child, nested_attachment or field in _ATTACHMENT_KEYS))
+        elif isinstance(node, list):
+            pending.extend((child, attachment) for child in node)
+        elif isinstance(node, str):
+            if (attachment and node.strip()) or _DATA_URI.match(node):
+                raise Reject("embedded_attachment")
+
+
+def _field_name(key):
+    return "".join(char for char in key.casefold() if char.isalnum())
 
 
 def write_json(value, stream):

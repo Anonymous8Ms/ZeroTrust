@@ -47,6 +47,10 @@ Source files remain unchanged. Files that cannot be safely processed are
 accounted for in the report and excluded from the export. For a nonempty input
 directory, the CLI returns a failure status if every file is quarantined.
 
+Recognised JSON and FHIR attachment fields are checked before any output is
+staged. If an opaque payload remains after sanitisation, the file is quarantined
+with the reason `embedded_attachment`.
+
 ## Processing model
 
 1. **Inspect and link.** Inventory inputs, parse records, identify sensitive
@@ -91,3 +95,18 @@ consistent pseudonyms, unresolved identities, preserved clinical values and
 encounter durations, FHIR references, and quarantine of malformed input. Sanitised
 records and mappings are reproducible for the same input and key. Measured
 runtime and peak memory can vary between runs.
+
+## Synthetic coverage corpus
+
+Generate a new 150-file corpus and run it through the CLI:
+
+```sh
+python3 tests/synthetic_coverage.py dev/synthetic-coverage
+RAKSHA_SECRET=synthetic-coverage-demo-key python3 main.py \
+  --input dev/synthetic-coverage/input --output dev/synthetic-coverage/results
+```
+
+The generator writes `expected.json` alongside the input folder. The automated
+suite compares the export with that manifest across CSV, TSV, text, nested JSON
+and FHIR. The corpus includes same-name patient groups, unresolved identities,
+preserved clinical values, invalid inputs and encoded attachment payloads.

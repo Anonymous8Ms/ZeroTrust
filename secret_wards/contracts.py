@@ -1,4 +1,5 @@
 """Interfaces shared by format adapters, detection, linkage and policy."""
+import base64
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path as FilePath
@@ -6,6 +7,9 @@ from typing import Literal
 
 Path = tuple[str | int, ...]
 Kind = Literal["identifier", "patient_name", "date", "age", "location", "attachment", "protected"]
+
+
+REDACTED_ATTACHMENT_DATA = base64.b64encode(b"[REDACTED]").decode("ascii")
 
 
 class Quarantine(Exception):
