@@ -5,6 +5,7 @@ from datetime import date, timedelta
 import hmac
 import json
 from pathlib import Path
+import re
 
 from .normalization import birth_date, date_order_hint, matching_text
 
@@ -51,6 +52,7 @@ def overlaps(left: Target, right: Target) -> bool:
 def build_plan(
     detection: DetectionResult, group: str | None, secret: bytes, policy: Policy,
     *, day_first: bool | None = None, fallback_day_first: bool | None = None,
+    birth_year_only: bool = False,
 ) -> RewritePlan:
     patient = pseudonym(secret, group) if group is not None else None
     scope = f"group:{group}" if group is not None else f"record:{detection.record_key}"
@@ -61,6 +63,7 @@ def build_plan(
         raise Quarantine("missing patient slot")
     if patient and detection.patient_slot not in targets:
         targets.append(detection.patient_slot)
+    has_age = any(target.kind == "age" for target in targets)
     edits: list[Edit] = []
     for target in targets:
         if any(overlaps(target, clinical) for clinical in protected):
@@ -80,6 +83,22 @@ def build_plan(
                 value = (date.fromisoformat(original) + shift).isoformat()
             except (ValueError, OverflowError):
                 raise Quarantine("unsupported encounter date") from None
+        elif target.kind == "birth_date":
+            # Generalise to a birth-year band as wide as the age band. The band always
+            # contains the true birth year. FHIR birthDate must stay a valid (partial)
+            # date, so there it becomes the first year of the band.
+            years = [int(y) for y in re.findall(r"(?<!\d)(\d{4})(?!\d)", matching_text(target.value))
+                     if 1850 <= int(y) <= 2100]
+            if birth_year_only and len(years) != 1:
+                raise Quarantine("unsupported birth date")  # FHIR needs a valid date or none
+            if len(years) != 1 or (has_age and not birth_year_only):
+                # A birth-year band next to an age band intersects to a narrower range than
+                # either alone, so the DOB is dropped where an age band already carries it.
+                value = "[REDACTED]"
+            else:
+                width = policy.age_band_width
+                lower = years[0] // width * width
+                value = str(lower) if birth_year_only else f"{lower}-{lower + width - 1}"
         elif target.kind == "age":
             try:
                 age = int(matching_text(target.value))

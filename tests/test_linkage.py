@@ -63,6 +63,28 @@ class LinkageTests(unittest.TestCase):
         self.assertNotEqual(linked["one"], linked["different-scheme"])
         self.assertIsNone(linked["missing"])
 
+    def test_unscoped_uhid_links_only_with_an_unambiguous_full_name(self):
+        first = {"uhid": "HX-000482", "name": "Tara Pariksha"}
+        second = {"uhid": "HX-000482", "name": "तारा परीक्षा"}
+        visits = [detect("first", first), detect("second", second)]
+        links = link_records(visits + [detect("bare-id", {"uhid": "HX-000482"})])
+        self.assertIsNotNone(links["first"])
+        self.assertEqual(links["first"], links["second"])
+        self.assertIsNone(links["bare-id"])
+
+        for a, b in (
+            (detect("a", first, hospital="Facility A"), detect("b", first, hospital="Facility B")),
+            (detect("a", {**first, "dob": "1974-09-18"}),
+             detect("b", {**first, "dob": "1983-01-29"})),
+        ):
+            with self.subTest(a=a.record_key, locations=(a.hospital, b.hospital)):
+                linked = link_records([a, b, *visits])
+                self.assertIsNotNone(linked["a"])
+                self.assertIsNotNone(linked["b"])
+                self.assertNotEqual(linked["a"], linked["b"])
+                self.assertIsNone(linked["first"])
+                self.assertIsNone(linked["second"])
+
     def test_unscoped_id_needs_a_name_and_the_same_encounter(self):
         evidence = {
             "name": "Tara Pariksha", "mrn": "SSD-CHECK-1234",
@@ -98,6 +120,49 @@ class LinkageTests(unittest.TestCase):
         linked = link_records(detections)
         self.assertEqual(linked["a"], linked["bridge"])
         self.assertNotEqual(linked["a"], linked["c"])
+
+    def test_national_id_anchor_connects_strong_matches_without_conflicts(self):
+        national = {"aadhaar": "234512340909"}
+        local = {"name": "Meera Kapoor", "uhid": "DEMO-10492"}
+        anchor = detect("anchor", {**national, **local})
+        national_record = detect("national", national)
+        local_record = detect("local", local)
+        matched = link_records([anchor, national_record, local_record])
+        self.assertIsNotNone(matched["anchor"])
+        self.assertEqual(matched["anchor"], matched["national"])
+        self.assertEqual(matched["anchor"], matched["local"])
+        self.assertEqual(matched, link_records([local_record, national_record, anchor]))
+
+        conflicted = link_records([
+            anchor,
+            detect("national", {**national, "dob": "1981-03-15"}),
+            detect("local", {**local, "dob": "1983-05-12"}),
+        ])
+        self.assertEqual(conflicted["anchor"], conflicted["national"])
+        self.assertNotEqual(conflicted["national"], conflicted["local"])
+
+        abha = {"abha": "91-3456-7890-1234"}
+        linked_identifiers = link_records([
+            detect("anchor", {**national, **abha}), national_record, detect("abha", abha),
+        ])
+        self.assertIsNotNone(linked_identifiers["anchor"])
+        self.assertEqual(linked_identifiers["anchor"], linked_identifiers["national"])
+        self.assertEqual(linked_identifiers["anchor"], linked_identifiers["abha"])
+
+    def test_facility_uhid_anchor_links_short_names_in_the_same_scope(self):
+        fields = {"name": "Meera Kapoor", "uhid": "DEMO-10492"}
+        anchor = detect("anchor", fields, hospital="Facility A")
+        full_name = detect("full-name", fields)
+        short_name = {**fields, "name": "Meera"}
+
+        linked = link_records([anchor, full_name, detect("short", short_name, hospital="Facility A")])
+        self.assertIsNotNone(linked["anchor"])
+        self.assertEqual(linked["anchor"], linked["full-name"])
+        self.assertEqual(linked["anchor"], linked["short"])
+
+        distinct = link_records([anchor, full_name, detect("short", short_name, hospital="Facility B")])
+        self.assertEqual(distinct["anchor"], distinct["full-name"])
+        self.assertNotEqual(distinct["anchor"], distinct["short"])
 
     def test_conflicting_national_ids_veto_shared_phone(self):
         detections = [

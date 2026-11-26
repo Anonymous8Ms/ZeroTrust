@@ -131,6 +131,61 @@ class PipelineTest(unittest.TestCase):
             self.assertGreater(audit["resources"]["peak_rss_mb"], 0)
 
 
+    def test_person_named_files_are_renamed_everywhere(self):
+        names = ["Meera Devi - discharge.txt", "Ramesh_Kumar_opd.txt", "Sunita_Verma_2025.txt"]
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "inputs"
+            source.mkdir()
+            for name in names + ["ward-note.txt"]:
+                (source / name).write_text("BP 140/90. Metformin 500 mg BD.\n", encoding="utf-8")
+            output = root / "output"
+            run(output, "filename-key", source)
+            exported = sorted(path.name for path in (output / "sanitized").iterdir())
+            self.assertIn("ward-note.txt", exported)
+            everything = " ".join(exported) + (output / "report.json").read_text(encoding="utf-8") \
+                + (output / "records.jsonl").read_text(encoding="utf-8")
+            for word in ("Meera", "Ramesh", "Sunita", "Verma", "Kumar", "Devi"):
+                self.assertNotIn(word, everything)
+            self.assertEqual(sum(name.startswith("file-") for name in exported), 3)
+
+    def test_numeric_mrn_is_removed_from_export_paths_and_indexes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "inputs"
+            folder = source / "00123456"
+            folder.mkdir(parents=True)
+            (folder / "00123456.csv").write_text(
+                "Patient Name,MRN,Diagnosis\nTest Example,00123456,malaria\n", encoding="utf-8",
+            )
+            (source / "report-0012-3456.csv").write_text(
+                "Patient Name,MRN,Diagnosis\nTest Example,00123456,malaria\n", encoding="utf-8",
+            )
+            output = root / "output"
+            run(output, "numeric-path-key", source)
+            exports = [item["output"] for item in report(output)["files"]]
+            self.assertEqual(len(exports), 2)
+            for path in exports:
+                self.assertTrue(Path(path).name.startswith("file-"))
+                self.assertEqual(rows(output / path)[0]["Diagnosis"], "malaria")
+            public_paths = "\n".join(exports) + (output / "records.jsonl").read_text()
+            self.assertNotIn("00123456", public_paths)
+            self.assertNotIn("0012-3456", public_paths)
+
+    def test_dob_is_generalised_to_a_birth_year_band_not_shifted(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "inputs"
+            source.mkdir()
+            (source / "note.txt").write_text("DOB: 12/04/1977\nBP 150/90\n", encoding="utf-8")
+            output = root / "output"
+            run(output, "dob-key", source)
+            note = (output / "sanitized" / "note.txt").read_text(encoding="utf-8")
+            self.assertEqual(note.splitlines()[0], "DOB: 1970-1979")
+            self.assertNotIn("1977", note)
+            run(root / "output2", "other-dob-key", source)  # same band under any key
+            self.assertEqual((root / "output2" / "sanitized" / "note.txt").read_text(encoding="utf-8"), note)
+
     def test_renamed_inputs_and_mixed_formats(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -249,9 +304,10 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(encounter["Visit Date (DD/MM/YYYY)"], encounter["Admitted"])
             admitted = date.fromisoformat(encounter["Admitted"])
             discharged = date.fromisoformat(encounter["Discharged"])
-            born = date.fromisoformat(encounter["DOB (MM/DD/YYYY)"])
             self.assertEqual((discharged - admitted).days, 9)
-            self.assertEqual((admitted - born).days, (date(2026, 9, 8) - date(1984, 5, 10)).days)
+            # The row already carries an age band, so the DOB is dropped rather than
+            # shifted: a DOB next to an age band only narrows the candidate set.
+            self.assertEqual(encounter["DOB (MM/DD/YYYY)"], "[REDACTED]")
 
     def test_redacts_identifiers_on_hidden_surfaces_and_in_notes(self):
         with TemporaryDirectory() as directory:
@@ -536,6 +592,141 @@ class PipelineTest(unittest.TestCase):
             self.assertNotIn("02/04/26", chat)
             self.assertIn("8:20 pm", chat)
             self.assertIn("BP 120/80", chat)
+
+    def test_withholds_joiner_names_and_scientific_notation_identifiers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "inputs"
+            source.mkdir()
+            (source / "note.txt").write_text(
+                "Patient Name: स\u200dमीर काल्पनिक\nClinical: BP 120/80\n", encoding="utf-8",
+            )
+            (source / "registration.json").write_text(
+                '{"patient_name":"Fictional Person","aadhaar":2.74512349092e11,'
+                '"metadata":{"aadhaar":2.74512349093e11},"result":93.125}',
+                encoding="utf-8",
+            )
+            output = root / "out"
+            run(output, "synthetic-identifier-key", source)
+            released = output / "sanitized"
+            note = (released / "note.txt").read_text(encoding="utf-8")
+            self.assertEqual(note, "Patient Name: [REDACTED]\nClinical: BP 120/80\n")
+            registration = json.loads((released / "registration.json").read_text())
+            self.assertEqual(registration["aadhaar"], 0)
+            self.assertEqual(registration["metadata"]["aadhaar"], 0)
+            self.assertEqual(registration["result"], 93.125)
+
+    def test_fhir_encounter_order_checks_time_and_offset(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "inputs"
+            source.mkdir()
+            for filename, start, end in (
+                ("reversed.fhir", "2026-02-14T16:10:00+05:30", "2026-02-14T03:25:00+05:30"),
+                ("ordered.fhir", "2026-02-14T16:10:00+05:30", "2026-02-14T11:25:00Z"),
+            ):
+                encounter = {"resourceType": "Encounter", "id": "sample-encounter", "status": "finished",
+                             "period": {"start": start, "end": end}}
+                (source / filename).write_text(json.dumps(encounter), encoding="utf-8")
+            output = root / "out"
+            run(output, "synthetic-encounter-key", source)
+            audit = report(output)
+            self.assertEqual(audit["counts"]["files_sanitized"], 1)
+            self.assertEqual(audit["counts"]["files_quarantined"], 1)
+            released = json.loads((output / "sanitized/ordered.fhir").read_text())
+            self.assertTrue(released["period"]["start"].endswith("T16:10:00+05:30"))
+            self.assertTrue(released["period"]["end"].endswith("T11:25:00Z"))
+
+    def test_explicit_facility_scope_links_mrns_across_exports(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "inputs"
+            source.mkdir()
+            output = root / "out"
+            mrn = "CLINIC-18754"
+            (source / "register.csv").write_text(
+                f"facility,mrn\nNorth Clinic,{mrn}\nSouth Clinic,{mrn}\n", encoding="utf-8",
+            )
+            (source / "visits.json").write_text(json.dumps({
+                "facility": {"name": "North Clinic"},
+                "visits": [{"mrn": mrn}, {"hospital": "South Clinic", "mrn": mrn}],
+            }), encoding="utf-8")
+
+            north = "urn:uuid:cf5d11fc-fcb4-4317-b82a-aa04f25e8fa1"
+            south = "urn:uuid:08b9c93c-e7b5-4a61-925d-1fbf39445c4c"
+            for filename, managing, issuer in (
+                ("north.fhir", north, None), ("south.fhir", south, south),
+                ("no-scope.fhir", None, None), ("different-issuer.fhir", north, south),
+            ):
+                identifier = {"system": "https://example.invalid/mrn", "value": mrn}
+                if issuer:
+                    identifier["assigner"] = {"reference": issuer}
+                patient = {"resourceType": "Patient", "identifier": [identifier]}
+                if managing:
+                    patient["managingOrganization"] = {"reference": managing}
+                (source / filename).write_text(json.dumps({
+                    "resourceType": "Bundle", "type": "collection", "entry": [
+                        {"fullUrl": "urn:uuid:54bcdcc5-a5c8-4f8c-aa29-8ffa59ab97b3", "resource": patient},
+                        {"fullUrl": north, "resource": {"resourceType": "Organization", "name": "North Clinic"}},
+                        {"fullUrl": south, "resource": {"resourceType": "Organization", "name": "South Clinic"}},
+                    ],
+                }), encoding="utf-8")
+
+            run(output, "synthetic-facility-key", source)
+            entries = map(json.loads, (output / "records.jsonl").read_text().splitlines())
+            links = {(Path(entry["file"]).name, entry["loc"]): entry["patient"] for entry in entries}
+            north_patient = links["register.csv", "row:0"]
+            south_patient = links["register.csv", "row:1"]
+            self.assertIsNotNone(north_patient)
+            self.assertIsNotNone(south_patient)
+            self.assertNotEqual(north_patient, south_patient)
+            self.assertEqual(links["north.fhir", "doc"], north_patient)
+            self.assertEqual(links["south.fhir", "doc"], south_patient)
+            self.assertEqual(links["visits.json", "/visits/0"], north_patient)
+            self.assertEqual(links["visits.json", "/visits/1"], south_patient)
+            self.assertIsNone(links["no-scope.fhir", "doc"])
+            self.assertIsNone(links["different-issuer.fhir", "doc"])
+            for exported in (output / "sanitized").iterdir():
+                self.assertNotIn(mrn, exported.read_text(encoding="utf-8"))
+
+    def test_json_results_link_per_patient_and_single_reports_use_doc(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input"
+            source.mkdir()
+            first = {"patient_name": "Tara Pariksha", "uhid": "HX-000482"}
+            second = {"patient_name": "Meera Demo", "uhid": "HX-000483"}
+            (source / "lab-export.json").write_text(json.dumps({"results": [
+                {**first, "test": "Glucose", "value": 105},
+                {**second, "test": "Glucose", "value": 92},
+            ]}), encoding="utf-8")
+            (source / "lab-report.json").write_text(json.dumps({
+                "patient": first, "results": [{"test": "HbA1c", "value": 5.4}],
+            }), encoding="utf-8")
+            fhir = {
+                "resourceType": "Patient", "id": "resource-001",
+                "identifier": [{"system": "https://example.invalid/uhid", "value": first["uhid"]}],
+                "name": [{"text": first["patient_name"]}],
+            }
+            (source / "record.fhir").write_text(json.dumps(fhir), encoding="utf-8")
+
+            output = root / "out"
+            run(output, "synthetic-lab-key", source)
+            entries = map(json.loads, (output / "records.jsonl").read_text().splitlines())
+            links = {(Path(entry["file"]).name, entry["loc"]): entry["patient"] for entry in entries}
+            patient = links["lab-export.json", "/results/0"]
+            self.assertIsNotNone(patient)
+            self.assertNotEqual(patient, links["lab-export.json", "/results/1"])
+            self.assertEqual(links["lab-report.json", "doc"], patient)
+            self.assertEqual(links["record.fhir", "doc"], patient)
+            self.assertEqual(len(links), 4)
+
+            exported = [json.loads((output / "sanitized" / name).read_text())
+                        for name in ("lab-export.json", "lab-report.json", "record.fhir")]
+            self.assertEqual([row["value"] for row in exported[0]["results"]], [105, 92])
+            self.assertEqual(exported[1]["results"], [{"test": "HbA1c", "value": 5.4}])
+            self.assertNotEqual(exported[2]["id"], fhir["id"])
+            self.assertNotIn(first["uhid"], json.dumps(exported))
 
     def test_all_quarantined_is_a_failed_cli_run(self):
         with TemporaryDirectory() as directory:

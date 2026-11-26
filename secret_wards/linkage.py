@@ -15,6 +15,8 @@ from .normalization import birth_date, identifier, name_form, name_similarity, p
 LinkageResult = dict[str, Optional[str]]
 _MAX_WEAK_BLOCK = 32
 _MAX_ID_BLOCK = 96
+_NATIONAL_MATCH_SCORE = 100
+_ANCHOR_MIN_SCORE = 80
 
 
 @dataclass(frozen=True, repr=False)
@@ -28,6 +30,7 @@ class _Profile:
     hospital: str
     record_ids: frozenset[tuple[str, str]]
     encounter: tuple[str, str] | None
+    named_uhid: tuple[str, ...] | None
 
 
 def _profile(detection: DetectionResult) -> _Profile:
@@ -79,9 +82,14 @@ def _profile(detection: DetectionResult) -> _Profile:
         start, end = next(iter(admissions)), next(iter(discharges))
         if start <= end:
             encounter = (start, end)
+    uhids = {value for kind, value in record_ids if kind == "UHID"}
+    named_uhid = None
+    full_names = {name for name in names if name_similarity(name, name) == 3}
+    if len(uhids) == len(full_names) == 1:
+        named_uhid = (next(iter(uhids)), *next(iter(full_names)))
     return _Profile(
         frozenset(names), frozenset(relatives), frozenset(phones), frozenset(births),
-        frozenset(national_ids), frozenset(local_ids), hospital, frozenset(record_ids), encounter,
+        frozenset(national_ids), frozenset(local_ids), hospital, frozenset(record_ids), encounter, named_uhid,
     )
 
 
@@ -154,6 +162,8 @@ def _blocks(profile: _Profile, shared_phones: set[str]) -> Iterable[tuple[str, .
         yield "national", scheme, value
     for (hospital, scheme), value in profile.local_ids:
         yield "local", hospital, scheme, value
+    if profile.named_uhid:
+        yield "named-uhid", *profile.named_uhid
     if profile.encounter and profile.names:
         for scheme, value in profile.record_ids:
             yield "encounter", scheme, value, *profile.encounter
@@ -168,12 +178,13 @@ def _blocks(profile: _Profile, shared_phones: set[str]) -> Iterable[tuple[str, .
 
 
 def _score(
-    left: _Profile, right: _Profile, shared_phones: set[str], *, allow_encounter: bool = True,
+    left: _Profile, right: _Profile, shared_phones: set[str], *,
+    allow_encounter: bool = True, allow_named_uhid: bool = False,
 ) -> int:
     if _conflict(left, right):
         return 0
     if left.national_ids & right.national_ids:
-        return 100
+        return _NATIONAL_MATCH_SCORE
     if left.local_ids & right.local_ids:
         return 90
 
@@ -196,6 +207,8 @@ def _score(
         and left.record_ids == right.record_ids
     ):
         return 61
+    if allow_named_uhid and left.named_uhid and left.named_uhid == right.named_uhid:
+        return _ANCHOR_MIN_SCORE
     if dob and (name >= 2 or relative or phone):
         return 70 + 4 * bool(relative) + 4 * phone + name
     if name >= 2 and phone and relative:
@@ -257,6 +270,7 @@ def link_records(
                 bucket.append(index)
 
     neighbors: dict[int, list[tuple[list[int], int]]] = defaultdict(list)
+    eligible_uhids: set[tuple[str, ...]] = set()
     for block, members in buckets.items():
         limit = _MAX_ID_BLOCK if block[0] in {"local", "national"} else _MAX_WEAK_BLOCK
         if block[0] == "encounter" and all(profiles[index].hospital for index in members):
@@ -264,6 +278,14 @@ def link_records(
         if len(members) > limit:
             stats.overfull_blocks += 1
             continue
+        if block[0] == "named-uhid":
+            # The same UHID and full name can occur at different sites. Any
+            # known facility or identity conflict disables this fallback.
+            owners = {profiles[index] for index in members}
+            if (len({profile.hospital for profile in owners if profile.hospital}) > 1
+                    or any(_conflict(a, b) for a, b in combinations(owners, 2))):
+                continue
+            eligible_uhids.add(block[1:])
         for offset, index in enumerate(members[:-1]):
             neighbors[index].append((members, offset + 1))
 
@@ -273,18 +295,43 @@ def link_records(
         candidates = {right for members, offset in sources for right in members[offset:]}
         stats.candidate_pairs += len(candidates)
         for right in candidates:
-            score = _score(profiles[left], profiles[right], shared_phones)
+            score = _score(
+                profiles[left], profiles[right], shared_phones,
+                allow_named_uhid=profiles[left].named_uhid in eligible_uhids,
+            )
             if score:
                 edges.append((-score, left, right))
                 support[left][right] = score
                 support[right][left] = score
     stats.supported_pairs = len(edges)
 
+    def compatible_via_anchor(left: int, right: int, anchor: int) -> bool:
+        links = support[anchor]
+        scores = links.get(left, 0), links.get(right, 0)
+        a, b, source = profiles[left], profiles[right], profiles[anchor]
+        if min(scores) < _ANCHOR_MIN_SCORE or _conflict(a, b):
+            return False
+        if _same_scope_conflict(a.local_ids, b.local_ids):
+            return False
+        if max(scores) == _NATIONAL_MATCH_SCORE:
+            return True
+        if not source.hospital or not source.named_uhid or source.named_uhid not in eligible_uhids:
+            return False
+        scope = (source.hospital, "UHID")
+        uhid = source.named_uhid[0]
+        left_uhids = {value for key, value in a.local_ids if key == scope}
+        right_uhids = {value for key, value in b.local_ids if key == scope}
+        return (
+            (left_uhids == {uhid} and b.named_uhid == source.named_uhid)
+            or (right_uhids == {uhid} and a.named_uhid == source.named_uhid)
+        )
+
     ambiguous = set()
     for index, ranked in support.items():
         best = max(ranked.values())
         rivals = [other for other, score in ranked.items() if score >= best - 3]
-        if any(b not in support[a] for a, b in combinations(rivals, 2)):
+        if any(b not in support[a] and not compatible_via_anchor(a, b, index)
+               for a, b in combinations(rivals, 2)):
             ambiguous.add(index)
     stats.ambiguous_records = len(ambiguous) + sum(
         representative in ambiguous for representative in aliases.values()
@@ -300,13 +347,22 @@ def link_records(
             continue
         a = groups.get(a_root, {a_root})
         b = groups.get(b_root, {b_root})
-        # Support must hold across the full proposed group. A bridge with two
-        # plausible neighbors cannot relax the constraints between those neighbors.
-        if all(j in support[i] for i in a for j in b):
-            for member in b:
-                roots[member] = a_root
-            groups[a_root] = a | b
-            groups.pop(b_root, None)
+        # Ordinarily every pair needs direct support. A single anchor can cover
+        # missing pairs when it strongly matches every member and corroborates
+        # each missing pair through a national ID or a facility-scoped UHID.
+        members = a | b
+        if not all(j in support[i] for i in a for j in b) and not any(
+            all(
+                member == anchor or support[anchor].get(member, 0) >= _ANCHOR_MIN_SCORE
+                for member in members
+            ) and all(j in support[i] or compatible_via_anchor(i, j, anchor) for i in a for j in b)
+            for anchor in members if profiles[anchor].national_ids or profiles[anchor].hospital
+        ):
+            continue
+        for member in b:
+            roots[member] = a_root
+        groups[a_root] = members
+        groups.pop(b_root, None)
 
     repeated = Counter(aliases.values())
     result = {}

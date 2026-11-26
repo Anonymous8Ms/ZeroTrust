@@ -7,8 +7,11 @@ import re
 import unicodedata
 
 
+_FORMAT_CONTROLS = re.compile(r"[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]")
+
+
 def matching_text(value: str) -> str:
-    value = unicodedata.normalize("NFKC", value)
+    value = _FORMAT_CONTROLS.sub("", unicodedata.normalize("NFKC", value))
     return "".join(
         str(unicodedata.decimal(char)) if char.isdecimal() else char
         for char in value
@@ -77,7 +80,7 @@ _CONSONANTS = dict(zip(
     "कखगघङचछजझञटठडढणतथदधनपफबभमयरलवशषसहळ",
     "k kh g gh n ch chh j jh n t th d dh n t th d dh n p ph b bh m y r l v sh sh s h l".split(),
 ))
-_VOWELS = dict(zip("अआइईउऊऋएऐओऔऑऍ", "a aa i ee u oo ri e ai o au o e".split()))
+_VOWELS = dict(zip("अआइईउऊऋएऐओऔऑऍ", "a aa i i u u ri e ai o au o e".split()))
 _VOWEL_SIGNS = dict(zip("ािीुूृेैोौॉॅ", "aa i ee u oo ri e ai o au o e".split()))
 _NUKTA = {"क": "q", "ख": "kh", "ग": "g", "ज": "z", "ड": "r", "ढ": "r", "फ": "f"}
 
@@ -94,13 +97,18 @@ def _romanize(value: str) -> str:
             if index < len(chars) and chars[index] == "़":
                 sound = _NUKTA.get(char, sound)
                 index += 1
+            after_vowel = bool(pieces and pieces[-1] in {"a", "aa", "i", "ee", "u", "oo", "ri", "e", "ai", "o", "au"})
             pieces.append(sound)
             if index < len(chars) and chars[index] in _VOWEL_SIGNS:
                 pieces.append(_VOWEL_SIGNS[chars[index]])
                 index += 1
             elif index < len(chars) and chars[index] == "्":
                 index += 1
-            else:
+            elif not (
+                char == "य"
+                and after_vowel
+                and (index == len(chars) or (not chars[index].isalpha() and chars[index] not in "ंँ"))
+            ):
                 pieces.append("a")
         elif char in _VOWELS:
             pieces.append(_VOWELS[char])
@@ -116,13 +124,15 @@ _TITLES = {
     "mr", "mrs", "ms", "miss", "shri", "sri", "shree", "smt", "shrimati",
     "shrimaati", "shreematee", "ji", "jee", "sahab", "saahab", "saahaba",
     "sahib", "saheb", "didi", "deedee", "bhai", "bhaaee", "kumari", "kumaari",
+    "pt", "km",
 }
+_FAMILIAR_SUFFIXES = {"amma", "ammaa", "babu", "baabu", "behenji", "behanji", "bahanji", "behenjee", "behanjee"}
 _MOHAMMAD = {
     "md", "mohd", "mhd", "mohammad", "mohammed", "muhammad", "mohamad",
     "muhammed", "mohammada", "muhammada", "mohamada",
 }
-_TOKEN_SOUNDS = re.compile(r"chh|ch|sh|ph|[kgtdbj]h|[qwz]")
-_SIMILAR_SOUNDS = {"chh": "c", "ch": "c", "sh": "s", "ph": "f", "q": "k", "w": "v", "z": "j"}
+_TOKEN_SOUNDS = re.compile(r"chh|ch|sh|ph|[kgtdbj]h|[qwzx]")
+_SIMILAR_SOUNDS = {"chh": "c", "ch": "c", "sh": "s", "ph": "f", "q": "k", "w": "v", "z": "j", "x": "ks"}
 
 
 def _name_sound(token: str) -> str:
@@ -133,12 +143,19 @@ def _name_sound(token: str) -> str:
     )
     if len(sound) == 1:
         return sound
-    return sound[0] + re.sub(r"(.)\1+", r"\1", re.sub(r"[aeiou]", "", sound[1:]))
+    consonants = sound[0] + re.sub(r"(.)\1+", r"\1", re.sub(r"[aeiou]", "", sound[1:]))
+    # A final y can represent the same vowel as i or e in romanized names.
+    if len(consonants) > 2 and sound.endswith("y"):
+        return consonants[:-1]
+    return consonants
 
 
 def name_form(value: str) -> tuple[str, ...]:
-    tokens = re.findall(r"[a-z]+", _romanize(matching_text(value)))
-    names = tuple(sorted(_name_sound(token) for token in tokens if token not in _TITLES))
+    tokens = [token for token in re.findall(r"[a-z]+", _romanize(matching_text(value)))
+              if token not in _TITLES]
+    if len(tokens) > 1 and tokens[-1] in _FAMILIAR_SUFFIXES:
+        tokens.pop()
+    names = tuple(sorted(_name_sound(token) for token in tokens))
     return names if 0 < len(names) <= 6 and any(len(token) > 1 for token in names) else ()
 
 
@@ -171,6 +188,42 @@ def name_similarity(left: tuple[str, ...], right: tuple[str, ...]) -> int:
                     return 0
             return 2
     shorter, longer = sorted((left, right), key=len)
-    return 1 if len(shorter) < len(longer) and all(
+    if len(shorter) < len(longer) and all(
         longer.count(token) >= shorter.count(token) for token in set(shorter)
-    ) else 0
+    ):
+        return 2 if len(common) >= 2 else 1
+
+    # Handle compound joined names (e.g. "Omprakash Sharma" vs "Om Prakash Sharma")
+    # and missing/extra single-letter middle initials (e.g. "M. R. Kapoor" vs "Meera Kapoor").
+    unmatched = list(left)
+    remainder = list(right)
+    for token in list(unmatched):
+        if token in remainder:
+            unmatched.remove(token)
+            remainder.remove(token)
+    if len(unmatched) == 1 and len(remainder) == 2 and unmatched[0] in (
+        remainder[0] + remainder[1], remainder[1] + remainder[0],
+    ):
+        return 2
+    if len(remainder) == 1 and len(unmatched) == 2 and remainder[0] in (
+        unmatched[0] + unmatched[1], unmatched[1] + unmatched[0],
+    ):
+        return 2
+
+    def _initials_match(a_tokens: list[str], b_tokens: list[str]) -> bool:
+        a_full = [t for t in a_tokens if len(t) > 1]
+        b_full = [t for t in b_tokens if len(t) > 1]
+        if (a_full and b_full) or (len(a_tokens) > len(a_full) and len(b_tokens) > len(b_full)):
+            return False
+        fulls, inits = (a_full, list(b_tokens)) if a_full else (b_full, list(a_tokens))
+        if not fulls or not all(len(t) == 1 for t in inits):
+            return False
+        for token in fulls:
+            if token[0] not in inits:
+                return False
+            inits.remove(token[0])
+        return True
+
+    if _initials_match(unmatched, remainder):
+        return 1
+    return 0
