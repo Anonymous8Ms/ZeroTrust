@@ -48,6 +48,7 @@ class IngestedFile:
     _suffix: str = ""
     _content: object = None
     _record_paths: dict[str, PathParts] = field(default_factory=dict)
+    outer_content: object = None
 
 
 def discover(input_root):
@@ -127,6 +128,7 @@ class FileAdapters:
             file_key = hashlib.sha256(os.fsencode(root_relative) + b"\0" + digest.encode()).hexdigest()
             records = []
             record_paths = {}
+            outer_content = None
 
             def add(location, record_content, record_path):
                 key = hashlib.sha256(f"{file_key}\0{location}".encode()).hexdigest()
@@ -151,10 +153,16 @@ class FileAdapters:
                     self._validate_fhir(content)
                     add("doc", copy.deepcopy(content), ())
                 else:
-                    for location in record_roots(content, json_record_paths, self.max_records):
+                    locations = record_roots(content, json_record_paths, self.max_records)
+                    if isinstance(content, dict) and locations != [()]:
+                        outer_content = copy.deepcopy(content)
+                        for location in locations:
+                            get(outer_content, location[:-1])[location[-1]] = None
+                    for location in locations:
                         add(pointer(location), copy.deepcopy(get(content, location)), location)
             return IngestedFile(
-                digest, None, tuple(records), file_format, suffix, content, record_paths
+                digest, None, tuple(records), file_format, suffix, content, record_paths,
+                outer_content
             )
         except Reject as exc:
             return IngestedFile(digest, str(exc))
@@ -163,7 +171,7 @@ class FileAdapters:
         except (UnicodeError, ValueError, RecursionError):
             return IngestedFile(digest, "malformed_input")
 
-    def export(self, document, plans, output_root, *, file_edits=()):
+    def export(self, document, plans, output_root, *, file_edits=(), folders=()):
         """Apply complete plans and publish one validated file, or quarantine it."""
         def result(reason=None, path=None, locations=None):
             return self.result_factory(
@@ -176,7 +184,10 @@ class FileAdapters:
             return result(document.reason)
         try:
             content, filename, locations = _rewrite(document, plans, file_edits)
-            self._publish(document._format, content, filename, Path(output_root))
+            if any(not isinstance(part, str) or not _SAFE_NAME.fullmatch(part)
+                   for part in folders):
+                raise Reject("unsafe_output_path")
+            self._publish(document._format, content, filename, Path(output_root), folders)
         except Reject as exc:
             return result(str(exc))
         except FileExistsError:
@@ -185,14 +196,20 @@ class FileAdapters:
             return result("output_write_failed")
         except (TypeError, AttributeError, ValueError, ArithmeticError, RecursionError):
             return result("invalid_rewrite")
-        return result(path=f"sanitized/{filename}", locations=locations)
+        return result(path="/".join(("sanitized", *folders, filename)), locations=locations)
 
-    def _publish(self, file_format, content, filename, output_root):
+    def _publish(self, file_format, content, filename, output_root, folders):
         # Stage outside sanitized/ and link only after validation. link() is atomic
         # and fails if another export already owns this filename.
         output_root.mkdir(parents=True, exist_ok=True)
-        safe_dir = output_root / "sanitized"
-        safe_dir.mkdir(exist_ok=True)
+        directory = output_root
+        for part in ("sanitized", *folders):
+            # Refuse a symlink at every existing output component.
+            directory = directory / part
+            directory.mkdir(exist_ok=True)
+            if directory.is_symlink():
+                raise Reject("unsafe_output_path")
+        safe_dir = directory
         directory_fd = os.open(safe_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         stage = None
         published = False

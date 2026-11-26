@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 import sys
 
-from secret_wards.fixture_backend import FixtureBackend
 from secret_wards.pipeline import run_pipeline
 from secret_wards.privacy import load_policy
 
@@ -20,8 +19,10 @@ def main() -> int:
         return 2
     try:
         policy = load_policy(Path(__file__).resolve().parent / "config" / "policy.yaml")
-        backend = FixtureBackend()
-        run_pipeline(args.input, args.output, secret.encode(), policy, backend, backend, backend)
+        report = run_pipeline(args.input, args.output, secret.encode(), policy)
+        if report["files_total"] and not report["files_sanitized"]:
+            print("No inputs were exported. See report.json.", file=sys.stderr)
+            return 1
     except Exception:
         # Raw paths and exception text can contain identifiers.
         print("Sanitisation failed. Check the inputs, policy and output directory.", file=sys.stderr)

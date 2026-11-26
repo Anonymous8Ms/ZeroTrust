@@ -6,8 +6,9 @@ that belong to the same patient, and reduces the detail in dates, ages and
 locations while preserving clinical values such as diagnoses, doses and vital
 signs.
 
-The current build is a prototype. Its CLI processes the bundled synthetic CSV and
-text fixtures and quarantines inputs outside those layouts. Use synthetic data only.
+The CLI accepts CSV, TSV, plain text, JSON and supported FHIR R4 JSON layouts.
+It detects identifiers in structured fields and in English, Hindi and Hinglish
+text. Use synthetic data only.
 
 ## Quick start
 
@@ -34,7 +35,8 @@ control.
 | `records.jsonl` | One entry per exported record with its output path, location and patient pseudonym. Unresolved identities have `patient: null`. |
 
 Source files remain unchanged. Files that cannot be safely processed are
-accounted for in the report and excluded from the export.
+accounted for in the report and excluded from the export. For a nonempty input
+directory, the CLI returns a failure status if every file is quarantined.
 
 ## Processing model
 
@@ -51,14 +53,19 @@ admission and discharge intervals remain intact. Unmapped locations are withheld
 The pipeline runs locally without network calls. It keeps raw working data in
 memory and omits direct identifiers and the key from its reports. Protect the
 input directory and host storage separately. Pseudonymised records can still
-carry re-identification risk. See [the privacy design notes](docs/privacy-design.md)
+carry re-identification risk. The built-in FHIR validator checks resource and
+reference structure. Full profile validation requires an additional validator.
+See [the privacy design notes](docs/privacy-design.md)
 for policy references and limitations.
 
 ## Development
 
 - `main.py` is the command-line entry point.
-- `secret_wards/contracts.py` defines the interfaces for parsing, detection,
-  linkage and export.
+- `secret_wards/contracts.py` defines parsed records and privacy policy targets.
+- `secret_wards/file_io.py` and `secret_wards/adapters/` own parsing, validation
+  and file publication.
+- `secret_wards/detection.py` and `secret_wards/linkage.py` detect sensitive
+  fields and group patient records.
 - `secret_wards/pipeline.py` coordinates processing.
 - `secret_wards/privacy.py` and `secret_wards/reporting.py` implement privacy
   transformations and output reports.
@@ -70,7 +77,8 @@ Run the tests with:
 python3 -m unittest discover -s tests -v
 ```
 
-The checks cover consistent pseudonyms, unresolved records, preserved clinical
-values and encounter durations, and quarantine of malformed input. Sanitised
+The checks run renamed and mixed-format datasets through the CLI and cover
+consistent pseudonyms, unresolved identities, preserved clinical values and
+encounter durations, FHIR references, and quarantine of malformed input. Sanitised
 records and mappings are reproducible for the same input and key. Measured
 runtime and peak memory can vary between runs.

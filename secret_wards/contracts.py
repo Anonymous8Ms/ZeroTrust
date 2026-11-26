@@ -1,7 +1,8 @@
 """Interfaces shared by format adapters, detection, linkage and policy."""
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from pathlib import Path as FilePath
+from typing import Literal
 
 Path = tuple[str | int, ...]
 Kind = Literal["identifier", "patient_name", "date", "age", "location", "protected"]
@@ -14,7 +15,7 @@ class Quarantine(Exception):
 @dataclass(frozen=True)
 class ParsedRecord:
     record_key: str
-    source_file: str
+    source_file: str | FilePath
     loc: str
     format: str
     content: object
@@ -49,31 +50,3 @@ class RewritePlan:
     record_key: str
     edits: tuple[Edit, ...]
     patient: str | None
-
-
-@dataclass(frozen=True)
-class ParsedFile:
-    records: tuple[ParsedRecord, ...]
-    structure: object
-
-
-@dataclass(frozen=True)
-class ExportResult:
-    # Paths are relative to sanitized/. The pipeline controls publication.
-    path: str
-    content: bytes
-    locations: Mapping[str, str]
-
-
-class Adapter(Protocol):
-    def parse(self, source: str, raw: bytes) -> ParsedFile: ...
-
-    def render(self, parsed: ParsedFile, plans: Mapping[str, RewritePlan]) -> ExportResult: ...
-
-
-class Detector(Protocol):
-    def detect(self, record: ParsedRecord) -> DetectionResult: ...
-
-
-class Linker(Protocol):
-    def resolve(self, detections: Sequence[DetectionResult]) -> Mapping[str, str | None]: ...

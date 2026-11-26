@@ -80,7 +80,7 @@ _LABELS = _rules({
     "ADDRESS": "address|full address|postal address|residential address|home address|street|address line|house no|house number|mohalla|पता|घर का पता|मोहल्ला",
     "VILLAGE": "village|gram|gram mohalla|ग्राम|गांव|गाँव",
     "TEHSIL": "tehsil|taluk|block|तहसील",
-    "DISTRICT": "district|distt|dist|जिला|ज़िला",
+    "DISTRICT": "district|distt|dist|location|जिला|ज़िला",
     "PIN": "pin|pincode|pin code|zip|postal code|पिन|पिन कोड",
     "AADHAAR": "aadhaar|aadhar|adhaar|adhar|aadhar no|aadhaar no|aadhaar number|uidai|आधार|आधार संख्या",
     "ABHA_NUMBER": "abha|abha id|abha no|abha number|health id|आभा|आभा संख्या",
@@ -88,9 +88,9 @@ _LABELS = _rules({
     "MRN": "mrn|mrn no|medical record no|medical record number|medical record id|एमआरएन",
     "UHID": "uhid|uhid no|hospital id|patient id|registration id|registration no|यूएचआईडी|पंजीकरण संख्या",
     "INSURANCE_ID": "insurance|insurance no|insurance id|claim id|policy id|policy no|policy number|member id|tpa id|बीमा आईडी|बीमा संख्या|पॉलिसी नंबर",
-    "DOB": "dob|d o b|birthdate|birth date|date of birth|जन्म तिथि|जन्म तारीख|जन्मतिथि",
+    "DOB": "dob|d o b|birthdate|birth date|birthdate|date of birth|जन्म तिथि|जन्म तारीख|जन्मतिथि",
     "AGE": "age|age years|उम्र|आयु",
-    "DATE": "admission|admission date|admit date|admitted|discharge date|discharged|visit date|registration date|collection date|admitted on|discharged on|भर्ती|छुट्टी|भर्ती की तिथि|छुट्टी की तिथि",
+    "DATE": "admission|admission date|admit date|admitted|discharge|discharge date|discharged|visit date|registration date|collection date|admitted on|discharged on|प्रवेश|भर्ती|छुट्टी|भर्ती की तिथि|छुट्टी की तिथि",
     "EMAIL": "email|e mail|email address|ईमेल",
     "HOSPITAL": "hospital|hospital name|facility|facility name|अस्पताल|अस्पताल का नाम",
     "DOCTOR": "doctor|doctor name|physician|dr|consultant|clinician|practitioner|attending|डॉक्टर|चिकित्सक",
@@ -178,7 +178,7 @@ _LABELLED_ID = re.compile(
     rf"[ \t]*[:=#]?[ \t]+(?P<value>{_CODE})", _RX,
 )
 _DATE = re.compile(r"\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}(?!\d)")
-_DATE_LABEL = re.compile(_EDGE + r"(?P<label>dob|born on|birth date|date of birth|जन्मतिथि|जन्म तिथि|admitted(?: on)?|discharged(?: on)?|visit date|भर्ती|छुट्टी)[ \t]*[:=]?[ \t]+(?=\d)", _RX)
+_DATE_LABEL = re.compile(_EDGE + r"(?P<label>dob|born on|birth date|birthdate|date of birth|जन्मतिथि|जन्म तिथि|admitted(?: on)?|discharged(?: on)?|visit date|भर्ती|छुट्टी)[ \t]*[:=]?[ \t]+(?=\d)", _RX)
 _ADDRESS = re.compile(
     _EDGE + r"(?:h\.?[ \t]*no\.?|house (?:no\.?|number)|mohalla|village|gram|tehsil|distt?\.?|district|पता|ग्राम|गाँव|गांव|मोहल्ला|तहसील|जिला|ज़िला)"
     r"[ \t]*[:=]?[ \t]+[^\n,;|]{1,100}", _RX,
@@ -484,7 +484,7 @@ def detect_record(
                     child_label = "name"
                 if key == "id" and resource_type == "Patient":
                     child_label = "uhid"
-                if key in {"line", "city", "state"} and label == "address":
+                if key in {"text", "line", "city", "district", "state"} and label == "address":
                     child_label = "address"
                 child_name_path = path if _kind(child_label) in _NAME_PARTS else name_path
                 pending.append((path + (key,), item, child_label, channel, role, relation, child_name_path))

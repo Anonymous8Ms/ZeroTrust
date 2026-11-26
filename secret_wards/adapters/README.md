@@ -9,17 +9,16 @@ python3 -B -m unittest discover -s tests -p test_adapters.py -v
 
 The adapter tests use their own synthetic CSV and Hindi note fixtures under
 `tests/fixtures/adapters/`. The CLI fixture tests use `tests/fixtures/input/`.
-The adapter tests use local stand-ins for the ingest/export API. The CLI uses
-a separate parse/render interface in `secret_wards/contracts.py`, so wiring
-these adapters into the CLI still requires an integration step. Use the
-organizer's schemas and validator when available.
+The adapter tests exercise the ingest/export API directly. The CLI uses
+the same file adapters and translates detector targets into adapter edits
+in `secret_wards/pipeline.py`.
 
-## Proposed mapping for Person 3
+## Adapter interface
 
 Import `FileAdapters` and `discover` from `secret_wards.file_io`. Import edit
 classes from `secret_wards.adapters`.
 
-- Construct `FileAdapters(record_factory=ParsedRecord, result_factory=ExportResult)`.
+- Construct `FileAdapters` with factories for parsed records and export status.
   The adapter passes shared fields as keyword arguments. This implementation
   calls the parsed payload `content` and passes an internal `Path` as
   `source_file`. A factory can translate these fields to the shared definitions.
@@ -43,9 +42,8 @@ classes from `secret_wards.adapters`.
   extension. The writer stages and validates files outside `sanitized/` and
   publishes them atomically without replacing an existing file.
 
-A plan supplies `record_key` and `edits`. The adapter's edit classes are
-proposed glue for the shared RewritePlan. Person 3 provides the replacement
-values. The adapter applies them and checks their effect on document structure.
+A plan supplies `record_key` and `edits`. The privacy policy provides the
+replacement values. The adapter applies them and validates the output structure.
 
 | Edit | Target |
 | --- | --- |
@@ -70,8 +68,9 @@ address the same JSON member in one export.
   blank lines and record line endings survive export. Quoting is canonicalized.
 - Plain text and FHIR use `doc`. Generic JSON uses RFC 6901 pointers, with the
   empty string for the root. An array at the root yields one record per item.
-  A JSON caller can pass `json_record_paths` to select nonoverlapping nested
-  records. Export reports pointers after applying all key renames.
+  The reader also recognises one nested `records`, `visits`, `patients` or
+  `encounters` array. An API caller can pass `json_record_paths` for other
+  nonoverlapping record paths. Export reports pointers after key renames.
 - The default decoder accepts strict UTF-8 and BOM-marked UTF-8, UTF-16 or
   UTF-32. Callers may specify an encoding for known legacy sources, including
   Windows-1252 and Latin-1. Output uses UTF-8. Default limits are 32 MiB per
