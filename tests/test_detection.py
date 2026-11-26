@@ -22,6 +22,16 @@ class DetectionTests(unittest.TestCase):
         self.assertTrue(all(target.start is None for target in result.sensitive_targets))
         self.assertEqual(result.hospital, "Demo Hospital A")
 
+    def test_structured_guardian_name_stays_separate_from_patient(self):
+        record = ParsedRecord("r", "synthetic", "doc", "json", {
+            "patient_name": "Meera Kapoor", "guardian": {"name": "Rajan Kapoor"},
+        })
+        observed = detect_record(record)
+        self.assertEqual({(item.kind, item.value) for item in observed.identity_evidence}, {
+            ("PATIENT_NAME", "Meera Kapoor"), ("RELATIVE_NAME", "Rajan Kapoor"),
+        })
+        self.assertIn(("guardian", "name"), {target.path for target in observed.sensitive_targets})
+
     def test_hindi_note_offsets_and_context(self):
         record = note_fixture("hindi")
         result = detect_record(record, day_first=True)
@@ -84,9 +94,24 @@ class DetectionTests(unittest.TestCase):
             "ADDRESS": "House 17, Demo Colony",
         })
 
+    def test_hinglish_names_exclude_the_report_heading_and_preceding_sentence(self):
+        text = (
+            "Patient Name: Geeta Chauhan\n"
+            "Treated conservatively. Geeta ji ki condition ab stable hai.\n"
+            "Report of Geeta ji  48 Y / F\n"
+            "Pt allergic to sulfa drugs.\n"
+        )
+        result = detect_record(ParsedRecord("r", "note", "doc", "text", text))
+        names = [text[hit.start:hit.end] for hit in result.sensitive_targets if hit.kind == "PATIENT_NAME"]
+        self.assertEqual(names, ["Geeta Chauhan", "Geeta", "Geeta"])
+
     def test_normalizes_matching_copies(self):
         self.assertEqual(name_form("श्री मोहम्मद आरिफ़"), name_form("Arif, Md. sahab"))
         self.assertEqual(name_similarity(name_form("M. Kapoor"), name_form("Kapoor, मीरा")), 2)
+        self.assertEqual(name_form("Fatima amma"), name_form("Fatima"))
+        self.assertNotEqual(name_form("Amma Devi"), name_form("Devi"))
+        self.assertEqual(name_form("Kavita Pandey"), name_form("कविता पांडे"))
+        self.assertNotEqual(name_form("Priya Sharma"), name_form("Pari Sharma"))
         self.assertEqual(phone_number("0091 (70000) 12345"), "7000012345")
         self.assertEqual(phone_number("०७००००१२०४५"), "7000012045")
         self.assertEqual(birth_date("०१/०६/१९९१", True), "1991-06-01")
@@ -104,15 +129,19 @@ class DetectionTests(unittest.TestCase):
 
     def test_fhir_patient_names_and_clinician_names_keep_distinct_roles(self):
         content = {"resourceType": "Bundle", "entry": [
-            {"resource": {"resourceType": "Patient", "name": [{"given": ["Meera"], "family": "Kapoor"}],
-                          "identifier": [{"system": "https://example.invalid/mrn", "value": "7001"}]}},
+            {"resource": {"resourceType": "Patient", "id": "resource-001",
+                          "name": [{"given": ["Meera"], "family": "Kapoor"}],
+                          "identifier": [{"system": "https://example.invalid/mrn", "value": "7001"},
+                                         {"system": "https://healthid.abdm.gov.in/",
+                                          "value": "91-3456-7890-1234"}]}},
             {"resource": {"resourceType": "Practitioner", "name": [{"given": ["Ramesh"], "family": "Demo"}]}},
             {"resource": {"resourceType": "Medication", "name": "Dolo"}},
         ]}
         result = detect_record(ParsedRecord("r", "synthetic-fhir", "doc", "fhir", content))
         self.assertEqual([(item.kind, item.value) for item in result.identity_evidence], [
-            ("MRN", "7001"), ("PATIENT_NAME", "Meera Kapoor"),
+            ("MRN", "7001"), ("ABHA_NUMBER", "91-3456-7890-1234"), ("PATIENT_NAME", "Meera Kapoor"),
         ])
+        self.assertIn(("entry", 0, "resource", "id"), {target.path for target in result.sensitive_targets})
         self.assertEqual(
             {target.path for target in result.protected_clinical_targets},
             {("entry", 1, "resource", "name", 0, "given", 0), ("entry", 1, "resource", "name", 0, "family")},
