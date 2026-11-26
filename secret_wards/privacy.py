@@ -91,6 +91,8 @@ def build_plan(
             value = f"{lower}-{lower + policy.age_band_width - 1}"
         elif target.kind == "location":
             value = policy.locations.get(target.value, "[REGION WITHHELD]")
+        elif target.kind == "attachment":
+            value = base64.b64encode(b"[REDACTED]").decode("ascii")
         else:
             value = "[REDACTED]"
         edits.append(Edit(target, value))

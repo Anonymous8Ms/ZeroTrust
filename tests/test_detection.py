@@ -55,7 +55,7 @@ class DetectionTests(unittest.TestCase):
         channel_kinds = {(target.channel, target.kind) for target in result.sensitive_targets}
         self.assertTrue({
             ("filename", "PATIENT_NAME"), ("filename", "PHONE"), ("header", "INSURANCE_ID"),
-            ("key", "PATIENT_NAME"), ("metadata", "PATIENT_NAME"), ("content", "AADHAAR"),
+            ("key", "PATIENT_NAME"), ("metadata", "SOURCE_PATH"), ("content", "AADHAAR"),
             ("content", "ABHA_NUMBER"), ("content", "PAN"), ("content", "ADDRESS"),
             ("content", "INSURANCE_ID"),
         } <= channel_kinds)

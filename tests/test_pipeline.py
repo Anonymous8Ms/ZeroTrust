@@ -1,4 +1,5 @@
 """Exercise the organiser's real CLI on team-generated synthetic records."""
+import base64
 import csv
 from datetime import date
 import hashlib
@@ -232,6 +233,68 @@ class PipelineTest(unittest.TestCase):
             born = date.fromisoformat(encounter["DOB (MM/DD/YYYY)"])
             self.assertEqual((discharged - admitted).days, 9)
             self.assertEqual((admitted - born).days, (date(2026, 9, 8) - date(1984, 5, 10)).days)
+
+    def test_redacts_identifiers_on_hidden_surfaces_and_in_notes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "inputs"
+            source.mkdir()
+            (source / "calls_ABX-2026-01125.csv").write_text(
+                'remarks,diagnosis,ABX-0074162 Synthetic Column\n'
+                'called by Casey Reporter,dengue,Source field\n',
+                encoding="utf-8",
+            )
+            (source / "contacts.txt").write_text(
+                "18:40 - Taylor Visitor (attendant), mob 7000012345\n"
+                "08/09/2026 22:00 - Morgan Patient ka BP 150/90\n"
+                "Treated conservatively. Morgan Patient ki condition ab stable hai.\n",
+                encoding="utf-8",
+            )
+            payload = base64.b64encode(b"Name: Parker Sender; contact: 7000012468").decode("ascii")
+            nested = {
+                "attachment": {"contentType": "text/plain", "data": payload},
+                "metadata": {"source_path": "/export/Synthetic Person/004321/intake.csv"},
+                "by_name": {"Blair Subject": {"Reg No": "ABC-0014213", "diagnosis": "malaria"}},
+            }
+            (source / "intake.json").write_text(json.dumps(nested), encoding="utf-8")
+            fhir = {"resourceType": "Bundle", "type": "collection", "entry": [
+                {"fullUrl": "https://example.invalid/Patient/ABX-0050012", "resource": {
+                    "resourceType": "Patient", "id": "ABX-0050012",
+                    "name": [{"text": "Jamie Example"}],
+                }},
+                {"fullUrl": "urn:uuid:observation-fixture", "resource": {
+                    "resourceType": "Observation", "id": "ABX-0050013",
+                    "subject": {"reference": "https://example.invalid/Patient/ABX-0050012", "display": "Jamie Example"},
+                    "text": {"status": "generated", "div":
+                             '<div xmlns="http://www.w3.org/1999/xhtml">Jamie Example, 42 yrs</div>'},
+                    "extension": [{"url": "https://example.invalid/StructureDefinition/mothers-name",
+                                   "valueString": "Dana Parent"}],
+                    "valueQuantity": {"value": 105, "unit": "mg/dL"},
+                }},
+            ]}
+            (source / "resources.fhir").write_text(json.dumps(fhir), encoding="utf-8")
+
+            output = root / "output"
+            run(output, "synthetic-redaction-test", source)
+            audit = report(output)
+            self.assertEqual(audit["counts"]["files_sanitized"], 4, audit)
+            files, _ = stable_output(output)
+            surface = "\n".join((*files, *(value.decode("utf-8") for value in files.values())))
+            for marker in ("ABX-2026-01125", "ABX-0074162", "Casey Reporter", "Taylor Visitor",
+                           "Morgan Patient", "Synthetic Person", "Blair Subject", "ABC-0014213",
+                           "Jamie Example", "Dana Parent", "ABX-0050012", "ABX-0050013", payload):
+                self.assertNotIn(marker, surface)
+            self.assertIn("BP 150/90", surface)
+            self.assertIn("condition ab stable hai", surface)
+            self.assertIn("dengue", surface)
+            clean_json = json.loads(files["sanitized/intake.json"])
+            self.assertEqual(base64.b64decode(clean_json["attachment"]["data"], validate=True), b"[REDACTED]")
+            self.assertEqual(next(iter(clean_json["by_name"].values()))["diagnosis"], "malaria")
+            clean_fhir = json.loads(files["sanitized/resources.fhir"])
+            observation = clean_fhir["entry"][1]["resource"]
+            self.assertEqual(observation["subject"]["reference"], clean_fhir["entry"][0]["fullUrl"])
+            self.assertEqual(observation["valueQuantity"], {"value": 105, "unit": "mg/dL"})
+            self.assertIn("40-49 yrs", observation["text"]["div"])
 
     def test_all_quarantined_is_a_failed_cli_run(self):
         with TemporaryDirectory() as directory:
