@@ -9,13 +9,15 @@ import re
 from time import perf_counter
 
 from .adapters import FieldEdit, FilenameEdit, HeaderEdit, KeyEdit, SpanEdit
-from .adapters.fhir import resource_id_spans
+from .adapters.fhir import patient_managing_organization, resource_id_spans
 from .adapters.json_records import get
 from .contracts import (
     DetectionResult as PolicyDetection, ParsedRecord, Quarantine, Target,
 )
 from .detection import DATE_KINDS, DetectionResult, TextSurface, detect_record
-from .file_io import FileAdapters, IngestedFile, discover, safe_output_component
+from .file_io import (
+    FileAdapters, IngestedFile, discover, has_numeric_path_identifier, safe_filename_stem, safe_output_component,
+)
 from .linkage import link_records
 from .normalization import birth_date, date_order_hint
 from .privacy import Policy, build_plan, derive
@@ -72,14 +74,33 @@ def json_keys(value, path=()):
             yield from json_keys(child, (*path, index))
 
 
-def inspect_record(record: ParsedRecord, path_surfaces=()) -> DetectionResult:
+def envelope_hospital(content):
+    """Keep an explicitly declared facility scope when a JSON export is split into records."""
+    if not isinstance(content, dict):
+        return None
+    scopes = set()
+    for node in (content, content.get("_export_meta")):
+        if not isinstance(node, dict):
+            continue
+        for field in ("hospital", "facility"):
+            name = node.get(field)
+            if isinstance(name, dict):
+                name = name.get("name")
+            if isinstance(name, str) and name.strip():
+                scopes.add(name.strip())
+    return next(iter(scopes)) if len(scopes) == 1 else None
+
+
+def inspect_record(record: ParsedRecord, path_surfaces=(), *, hospital=None) -> DetectionResult:
     if record.format in {"csv", "tsv"}:
         surfaces = (TextSurface(key, "header", (key,)) for key in record.content)
     elif record.format in {"json", "fhir"}:
         surfaces = json_keys(record.content)
     else:
         surfaces = ()
-    return detect_record(record, surfaces=(*surfaces, *path_surfaces))
+    if record.format == "fhir":
+        hospital = patient_managing_organization(record.content)
+    return detect_record(record, surfaces=(*surfaces, *path_surfaces), fallback_hospital=hospital)
 
 
 def extract(record: ParsedRecord, hit):
@@ -134,6 +155,16 @@ def opaque(secret, purpose, value):
     return derive(secret, purpose, value).hex()[:24]
 
 
+def discharge_before_admission(record, start, end, replacements):
+    if record.format == "fhir" and start.span and end.span:
+        first, last = (get(record.content, target.path) for target in (start, end))
+        try:
+            return datetime.fromisoformat(last) < datetime.fromisoformat(first)
+        except (TypeError, ValueError):
+            raise Quarantine("invalid encounter timestamps") from None
+    return replacements[end] < replacements[start]
+
+
 def policy_plan(record, detection, group, secret, policy):
     targets = []
     slot = None
@@ -165,7 +196,9 @@ def policy_plan(record, detection, group, secret, policy):
                 continue
             edited_ids.add(hit.path)
             value, span = get(record.content, hit.path), None
-        if hit.kind in DATE_KINDS:
+        if hit.kind == "DOB":
+            kind = "birth_date"  # generalised, never shifted: a shifted DOB still leaks the birth year
+        elif hit.kind in DATE_KINDS:
             kind = "date"
         target = Target(hit.path, kind, value, span)
         targets.append(target)
@@ -192,13 +225,15 @@ def policy_plan(record, detection, group, secret, policy):
 
     plan = build_plan(PolicyDetection(record.record_key, {}, tuple(targets), slot),
                       group, secret, policy, day_first=detection.day_first,
-                      fallback_day_first=detection.fallback_day_first)
+                      fallback_day_first=detection.fallback_day_first,
+                      birth_year_only=record.format == "fhir")
     replacements = {edit.target: edit.replacement for edit in plan.edits}
     for dates in encounter_dates.values():
         starts = dates.get("ADMISSION_DATE", ())
         ends = dates.get("DISCHARGE_DATE", ())
         if len(starts) == len(ends) == 1:
-            if replacements[next(iter(ends))] < replacements[next(iter(starts))]:
+            start, end = next(iter(starts)), next(iter(ends))
+            if discharge_before_admission(record, start, end, replacements):
                 raise Quarantine("discharge before admission")
 
     edits = []
@@ -227,7 +262,7 @@ def policy_plan(record, detection, group, secret, policy):
             if key_edit not in edits:
                 edits.append(key_edit)
     return AdapterPlan(plan.record_key, tuple(edits), plan.patient), any(
-        edit.target.kind in {"age", "location", "date"} for edit in plan.edits
+        edit.target.kind in {"age", "location", "date", "birth_date"} for edit in plan.edits
     )
 
 
@@ -245,7 +280,9 @@ def safe_path(item, relative, secret):
     }
     safe_parts = []
     for index, part in enumerate(parts):
-        if index in sensitive or not safe_output_component(part):
+        stem = Path(part).stem if index == len(parts) - 1 else part
+        if (index in sensitive or not safe_output_component(part) or has_numeric_path_identifier(stem)
+                or (index == len(parts) - 1 and not safe_filename_stem(part))):
             part = "file-" + opaque(secret, "export-path", "/".join(parts[:index + 1]))
             if index == len(parts) - 1:
                 part += relative.suffix.lower()
@@ -266,7 +303,10 @@ def run_pipeline(source: Path, output: Path, secret: bytes, policy: Policy) -> d
     for path in discover(source):
         document = adapter.ingest(path, source)
         path_surfaces = tuple(filename_surfaces(path.relative_to(source)))
-        detections = tuple(inspect_record(record, path_surfaces) for record in document.records)
+        hospital = envelope_hospital(document.outer_content)
+        detections = tuple(
+            inspect_record(record, path_surfaces, hospital=hospital) for record in document.records
+        )
         day_first = fallback_date_order(document.records, detections)
         envelope = None
         if document.outer_content is not None:
