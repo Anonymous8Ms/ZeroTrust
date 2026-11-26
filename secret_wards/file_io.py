@@ -40,6 +40,7 @@ def safe_output_component(part):
 # cannot survive in the output path, report.json or records.jsonl.
 _SAFE_STEM_WORDS = frozenset("""
     a an and of the for to in on at by with ka ki ke
+    extra quarantine facility facilities
     discharge discharges summary summaries note notes nursing nurse opd ipd visit visits
     lab labs laboratory report reports rx prescription prescriptions billing bill bills
     invoice invoices registration register registrations patients patient export exports
@@ -65,27 +66,33 @@ _SAFE_STEM_WORDS = frozenset("""
 """.split())
 
 
-def has_numeric_path_identifier(part):
-    # Keep short document sequence numbers and years, but hide numeric-only
-    # components and longer digit runs that can be patient identifiers.
-    digits = re.sub(r"[^0-9]", "", part)
-    return (bool(digits) and not any(char.isalpha() for char in part)) or len(digits) >= 5
+def has_numeric_path_identifier(stem):
+    chunks = re.findall(r"[0-9]+", stem)
+    if not chunks:
+        return False
+    if not any(char.isalpha() for char in stem):
+        return True
+    if sum(map(len, chunks)) < 4:
+        return False
+    # Preserve a single standalone year in a document label, but treat
+    # other four-digit tokens and split groups as possible identifiers.
+    return not (
+        len(chunks) == 1 and re.fullmatch(r"(?:19|20)[0-9]{2}", chunks[0])
+        and re.search(r"(?<![A-Za-z0-9])" + chunks[0] + r"(?![A-Za-z0-9])", stem)
+    )
 
 
-def safe_filename_stem(part):
-    stem = Path(part).stem
+def safe_document_stem(stem):
     if not stem.isascii():
         return False
-    stem = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", stem)  # split camelCase
-    for chunk in re.split(r"[^A-Za-z0-9]+", stem):
-        if not chunk or chunk.isdigit():
-            continue
-        if any(c.isdigit() for c in chunk) and re.fullmatch(r"[0-9a-fA-F]+", chunk):
-            continue  # hex-style ids such as bundle_581255ae
-        word = re.sub(r"\d+", "", chunk).lower()
-        if word and word not in _SAFE_STEM_WORDS and len(word) > 1:
-            return False
-    return True
+    stem = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", stem)
+    words = [re.sub(r"[0-9]+", "", chunk).lower()
+             for chunk in re.split(r"[^A-Za-z0-9]+", stem)]
+    unknown = [word for word in words if word and word not in _SAFE_STEM_WORDS]
+    return not unknown or (
+        len(unknown) == 1 and len(unknown[0]) == 1
+        and any(len(word) > 1 and word in _SAFE_STEM_WORDS for word in words)
+    )
 
 
 Edit = FieldEdit | FilenameEdit | HeaderEdit | KeyEdit | SpanEdit
