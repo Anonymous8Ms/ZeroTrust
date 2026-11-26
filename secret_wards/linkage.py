@@ -44,7 +44,9 @@ def _profile(detection: DetectionResult) -> _Profile:
             if normalized:
                 phones.add(normalized)
         elif item.kind == "DOB":
-            normalized = birth_date(item.value, detection.day_first)
+            normalized = birth_date(
+                item.value, detection.day_first, fallback_day_first=detection.fallback_day_first,
+            )
             if normalized:
                 births.add(normalized)
         elif item.kind in {"AADHAAR", "ABHA_NUMBER", "PAN", "MRN", "UHID"}:

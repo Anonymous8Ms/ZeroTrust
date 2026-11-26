@@ -1,6 +1,6 @@
 """Connect validated file I/O, patient detection and the privacy policy."""
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import re
 from time import perf_counter
@@ -12,6 +12,7 @@ from .contracts import (
 from .detection import DetectionResult, TextSurface, detect_record
 from .file_io import FileAdapters, IngestedFile, discover
 from .linkage import link_records
+from .normalization import birth_date, date_order_hint
 from .privacy import Policy, build_plan, derive
 from .reporting import write_reports
 
@@ -44,6 +45,7 @@ class WorkItem:
     document: IngestedFile
     detections: tuple[DetectionResult, ...]
     envelope: ParsedRecord | None = None
+    fallback_day_first: bool = True
 
 
 def json_keys(value, path=()):
@@ -75,6 +77,30 @@ def extract(record: ParsedRecord, hit):
     if hit.start is not None:
         return text[hit.start:hit.end]
     return text.strip()
+
+
+def fallback_date_order(records, detections):
+    """Use unambiguous dates or format labels in the file to resolve unlabeled dates."""
+    observed, declared = set(), set()
+    for record, detection in zip(records, detections, strict=True):
+        for hit in detection.sensitive_targets:
+            if hit.channel != "content" or hit.kind not in {"DATE", "DOB"}:
+                continue
+            if hit.path and isinstance(hit.path[-1], str):
+                hint = date_order_hint(hit.path[-1])
+                if hint is not None:
+                    declared.add(hint)
+                    continue
+            value = extract(record, hit)
+            day_first, month_first = birth_date(value, True), birth_date(value, False)
+            if bool(day_first) != bool(month_first):
+                observed.add(bool(day_first))
+    if len(observed) == 1:
+        return observed.pop()
+    if not observed and len(declared) == 1:
+        return declared.pop()
+    # Use the local convention for ambiguous dates without a consistent source hint.
+    return True
 
 
 def opaque(secret, purpose, value):
@@ -110,7 +136,8 @@ def policy_plan(record, detection, group, secret, policy):
         targets.append(Target(hit.path, "protected", "", span))
 
     plan = build_plan(PolicyDetection(record.record_key, {}, tuple(targets), slot),
-                      group, secret, policy, day_first=detection.day_first)
+                      group, secret, policy, day_first=detection.day_first,
+                      fallback_day_first=detection.fallback_day_first)
     edits = []
     for edit in plan.edits:
         target, replacement = edit.target, edit.replacement
@@ -172,11 +199,13 @@ def run_pipeline(source: Path, output: Path, secret: bytes, policy: Policy) -> d
         document = adapter.ingest(path, source)
         path_surfaces = tuple(filename_surfaces(path.relative_to(source)))
         detections = tuple(inspect_record(record, path_surfaces) for record in document.records)
+        day_first = fallback_date_order(document.records, detections)
+        detections = tuple(replace(result, fallback_day_first=day_first) for result in detections)
         envelope = None
         if document.outer_content is not None:
             envelope = ParsedRecord("envelope:" + path.relative_to(source).as_posix(),
                                     path, "", "json", document.outer_content)
-        items.append(WorkItem(path, document, detections, envelope))
+        items.append(WorkItem(path, document, detections, envelope, day_first))
     groups = link_records(result for item in items for result in item.detections)
 
     (output / "sanitized").mkdir(parents=True)
@@ -211,8 +240,10 @@ def run_pipeline(source: Path, output: Path, secret: bytes, policy: Policy) -> d
                     for header in headers
                 )]
                 if item.envelope is not None:
-                    outer, _ = policy_plan(item.envelope, inspect_record(item.envelope),
-                                           None, secret, policy)
+                    envelope_detection = replace(
+                        inspect_record(item.envelope), fallback_day_first=item.fallback_day_first,
+                    )
+                    outer, _ = policy_plan(item.envelope, envelope_detection, None, secret, policy)
                     file_edits.extend(outer.edits)
                 status = adapter.export(document, (plan for plan, _ in plans), output,
                                         file_edits=file_edits, folders=folders)

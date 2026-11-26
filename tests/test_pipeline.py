@@ -192,6 +192,47 @@ class PipelineTest(unittest.TestCase):
             for marker in (b"Asha Demo", b"7000000101", b"7000000102", b"source-patient"):
                 self.assertNotIn(marker, payload)
 
+    def test_age_labels_and_numeric_date_orders(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "inputs"
+            source.mkdir()
+            (source / "ward-note.txt").write_text(
+                "उम्र: ४२ वर्ष / महिला\n"
+                "Admission: 08/09/2026\nDischarge: 09/09/2026\n"
+                "Clinical: BP 150/90; Dolo 650 BD\n",
+                encoding="utf-8",
+            )
+            (source / "encounters.csv").write_text(
+                "Age,Admitted,Discharged,DOB (MM/DD/YYYY),Visit Date (DD/MM/YYYY)\n"
+                "47 years,09/08/2026,09/17/2026,05/10/1984,08/09/2026\n",
+                encoding="utf-8",
+            )
+            (source / "invalid-age.txt").write_text("Age: 131 years\n", encoding="utf-8")
+            (source / "invalid-date.txt").write_text("Admission: 31/02/2026\n", encoding="utf-8")
+
+            output = root / "output"
+            run(output, "synthetic-age-date-key", source)
+            counts = report(output)["counts"]
+            self.assertEqual(counts["files_sanitized"], 2)
+            self.assertEqual(counts["files_quarantined"], 2)
+
+            export = output / "sanitized"
+            note = (export / "ward-note.txt").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(note[0], "उम्र: 40-49 वर्ष / महिला")
+            admitted, discharged = (date.fromisoformat(line.split(": ")[1]) for line in note[1:3])
+            self.assertEqual((discharged - admitted).days, 1)
+            self.assertEqual(note[3], "Clinical: BP 150/90; Dolo 650 BD")
+
+            encounter = rows(export / "encounters.csv")[0]
+            self.assertEqual(encounter["Age"], "40-49 years")
+            self.assertEqual(encounter["Visit Date (DD/MM/YYYY)"], encounter["Admitted"])
+            admitted = date.fromisoformat(encounter["Admitted"])
+            discharged = date.fromisoformat(encounter["Discharged"])
+            born = date.fromisoformat(encounter["DOB (MM/DD/YYYY)"])
+            self.assertEqual((discharged - admitted).days, 9)
+            self.assertEqual((admitted - born).days, (date(2026, 9, 8) - date(1984, 5, 10)).days)
+
     def test_all_quarantined_is_a_failed_cli_run(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

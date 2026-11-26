@@ -35,7 +35,19 @@ def identifier(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", matching_text(value))
 
 
-def birth_date(value: str, day_first: bool | None = None) -> str:
+_DATE_FORMAT_SUFFIX = re.compile(r"\b(dd|mm)[ /.-]+(dd|mm)[ /.-]+yyyy\)?\s*$", re.IGNORECASE)
+
+
+def date_order_hint(label: str) -> bool | None:
+    match = _DATE_FORMAT_SUFFIX.search(label)
+    if match and match[1].lower() != match[2].lower():
+        return match[1].lower() == "dd"
+    return None
+
+
+def birth_date(
+    value: str, day_first: bool | None = None, *, fallback_day_first: bool | None = None,
+) -> str:
     parts = re.fullmatch(r"(\d{1,4})[-/.](\d{1,2})[-/.](\d{1,4})", matching_text(value.strip()))
     if not parts:
         return ""
@@ -47,8 +59,11 @@ def birth_date(value: str, day_first: bool | None = None) -> str:
         a, b = int(first), int(second)
         if day_first is None:
             if a <= 12 and b <= 12 and a != b:
-                return ""
-            day_first = a >= b
+                if fallback_day_first is None:
+                    return ""
+                day_first = fallback_day_first
+            else:
+                day_first = a >= b
         day, month = (a, b) if day_first else (b, a)
     else:
         return ""

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 import re
 from typing import Iterable, Protocol, Union
 
-from .normalization import matching_text, phone_number
+from .normalization import birth_date, date_order_hint, matching_text, phone_number
 
 Path = tuple[Union[str, int], ...]
 
@@ -60,6 +60,7 @@ class DetectionResult:
     protected_clinical_targets: tuple[Target, ...] = field(repr=False)
     hospital: str | None = field(default=None, repr=False)
     day_first: bool | None = None
+    fallback_day_first: bool | None = None
 
 
 def _rules(groups: dict[str, str]) -> dict[str, str]:
@@ -90,7 +91,7 @@ _LABELS = _rules({
     "INSURANCE_ID": "insurance|insurance no|insurance id|claim id|policy id|policy no|policy number|member id|tpa id|बीमा आईडी|बीमा संख्या|पॉलिसी नंबर",
     "DOB": "dob|d o b|birthdate|birth date|birthdate|date of birth|जन्म तिथि|जन्म तारीख|जन्मतिथि",
     "AGE": "age|age years|उम्र|आयु",
-    "DATE": "admission|admission date|admit date|admitted|discharge|discharge date|discharged|visit date|registration date|collection date|admitted on|discharged on|प्रवेश|भर्ती|छुट्टी|भर्ती की तिथि|छुट्टी की तिथि",
+    "DATE": "admission|admission date|admit date|admitted|discharge|discharge date|discharged|visit date|registration date|reg date|registered|registered on|collection date|admitted on|discharged on|प्रवेश|भर्ती|छुट्टी|भर्ती की तिथि|छुट्टी की तिथि",
     "EMAIL": "email|e mail|email address|ईमेल",
     "HOSPITAL": "hospital|hospital name|facility|facility name|अस्पताल|अस्पताल का नाम",
     "DOCTOR": "doctor|doctor name|physician|dr|consultant|clinician|practitioner|attending|डॉक्टर|चिकित्सक",
@@ -183,6 +184,11 @@ _ADDRESS = re.compile(
     _EDGE + r"(?:h\.?[ \t]*no\.?|house (?:no\.?|number)|mohalla|village|gram|tehsil|distt?\.?|district|पता|ग्राम|गाँव|गांव|मोहल्ला|तहसील|जिला|ज़िला)"
     r"[ \t]*[:=]?[ \t]+[^\n,;|]{1,100}", _RX,
 )
+_AGE_NUMBER = re.compile(
+    r"\d{1,3}(?=[ \t]*(?:$|(?:years?|yrs?\.?|y|वर्ष|साल)(?![^\W_])"
+    r"|/[ \t]*(?:f(?:emale)?|m(?:ale)?|महिला|पुरुष)(?![^\W_])))",
+    _RX,
+)
 _CLINICAL = re.compile(
     _EDGE + r"(?:"
     r"(?:BP|बीपी|blood pressure)[ \t]*[:=]?[ \t]*\d{2,3}\s*/\s*\d{2,3}|"
@@ -202,6 +208,8 @@ def _label(value: str) -> str:
 
 
 def _kind(label: str) -> str:
+    if date_order_hint(label) is not None:
+        label = label.rsplit(" ", 3)[0]
     kind = _LABELS.get(label)
     if kind:
         return kind
@@ -312,6 +320,9 @@ def _scan_text(
             date_match = _DATE.match(text, start, end)
             if date_match:
                 add(kind, *date_match.span(), role)
+        elif kind == "AGE":
+            age = _AGE_NUMBER.match(text, start, end)
+            add(kind, *(age.span() if age else (start, end)), role)
         elif kind in _VALUE_PATTERNS:
             value = _VALUE_PATTERNS[kind].match(text, start, end)
             if value and (kind != "PHONE" or phone_number(value[0])):
@@ -517,8 +528,18 @@ def detect_record(
                 evidence_role = _RELATIVES[kind] if kind != "RELATIVE_NAME" else relation or "relative"
             elif role == "relative" and kind == "PATIENT_NAME":
                 target_kind = "RELATIVE_NAME"
+            if kind == "AGE" and isinstance(value, str):
+                age = _AGE_NUMBER.match(value, len(value) - len(value.lstrip()))
+                if age and age[0] != text:
+                    sensitive.append(Target(kind, path, start=age.start(), end=age.end()))
+                    continue
             sensitive.append(Target("PATIENT_NAME" if kind in _NAME_PARTS else target_kind, path))
-            collect(target_kind, text, evidence_role, name_path)
+            if target_kind == "DOB" and path and isinstance(path[-1], str):
+                day_order = date_order_hint(path[-1])
+                if day_order is not None:
+                    text = birth_date(text, day_order)
+            if text:
+                collect(target_kind, text, evidence_role, name_path)
         elif isinstance(value, str):
             scan(TextSurface(value, path=path), role)
 

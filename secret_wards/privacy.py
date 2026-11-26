@@ -6,7 +6,7 @@ import hmac
 import json
 from pathlib import Path
 
-from .normalization import birth_date, matching_text
+from .normalization import birth_date, date_order_hint, matching_text
 
 from .contracts import DetectionResult, Edit, Quarantine, RewritePlan, Target
 
@@ -50,7 +50,7 @@ def overlaps(left: Target, right: Target) -> bool:
 
 def build_plan(
     detection: DetectionResult, group: str | None, secret: bytes, policy: Policy,
-    *, day_first: bool | None = None,
+    *, day_first: bool | None = None, fallback_day_first: bool | None = None,
 ) -> RewritePlan:
     patient = pseudonym(secret, group) if group is not None else None
     scope = f"group:{group}" if group is not None else f"record:{detection.record_key}"
@@ -70,8 +70,14 @@ def build_plan(
         if patient and target == detection.patient_slot:
             value = patient
         elif target.kind == "date":
+            order = day_first
+            if target.path and isinstance(target.path[-1], str):
+                declared_order = date_order_hint(target.path[-1])
+                if declared_order is not None:
+                    order = declared_order
+            original = birth_date(target.value, order, fallback_day_first=fallback_day_first)
             try:
-                value = (date.fromisoformat(birth_date(target.value, day_first)) + shift).isoformat()
+                value = (date.fromisoformat(original) + shift).isoformat()
             except (ValueError, OverflowError):
                 raise Quarantine("unsupported encounter date") from None
         elif target.kind == "age":
