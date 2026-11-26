@@ -1,0 +1,3 @@
+patient_name,patient_id,phone,age,location,admitted,discharged,diagnosis
+Asha Demo,FIX-A,+91 00000 00101,47,Example Village East,2026-01-01,2026-01-10,dengue
+Asha Demo,FIX-B,+91 00000 00102,48,Example Village West,2026-02-10,2026-02-19,dengue

@@ -1,0 +1,8 @@
+{
+  "age_band_width": 10,
+  "max_date_shift_days": 180,
+  "locations": {
+    "Example Village East": "Example District",
+    "Example Village West": "Example District"
+  }
+}
