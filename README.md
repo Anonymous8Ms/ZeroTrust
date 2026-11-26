@@ -1,7 +1,7 @@
-# Secret Wards
+# ZeroTrust
 
-Secret Wards is an offline privacy pipeline for the Yugaantar DevForge
-synthetic hospital-record challenge. This branch contains the Person 3
+ZeroTrust is an offline privacy pipeline for Secret Wards, Track 3 of the
+Yugaantar DevForge hackathon. This branch contains the Person 3
 foundation and a fixture-only backend. The backend recognises the checked-in
 fixture layouts and quarantines other files. The team adapters, multilingual
 detector and linker are integration dependencies.
