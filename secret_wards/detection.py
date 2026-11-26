@@ -7,6 +7,9 @@ half-open Python string indices.
 
 from __future__ import annotations
 
+from array import array
+from base64 import b64decode
+from binascii import Error as InvalidBase64
 from bisect import bisect_right
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -102,6 +105,7 @@ _LABELS = _rules({
     "CLINICAL": "diagnosis|diagnoses|complaint|complaints|symptom|symptoms|procedure|procedures|medication|medications|medicines|medicine|drug|dose|dosage|frequency|rx|vitals|bp|pulse|hr|temperature|spo2|hba1c|hb|hemoglobin|creatinine|glucose|lab value|lab result|result|length of stay|los|निदान|दवा|शिकायत|खुराक",
 })
 DATE_KINDS = {"DOB", "DATE", "ADMISSION_DATE", "DISCHARGE_DATE", "TIMESTAMP_DATE"}
+ENCOUNTER_DATES = {"ADMISSION_DATE", "DISCHARGE_DATE"}
 _SOURCE_PATHS = {"source path", "source file", "file name", "filename", "export path"}
 _ATTACHMENTS = {"attachment", "attachments", "document attachment"}
 _METADATA = {"metadata", "meta", "export metadata", "export meta"} | _SOURCE_PATHS | _ATTACHMENTS
@@ -118,8 +122,16 @@ _HONORIFIC = r"(?:ji|sahab|saheb|sahib|didi|bhai|जी|साहब|दीद�
 _EDGE = r"(?<![^\W_])"  # unlike a word boundary, accepts underscore-separated filenames
 _END = r"(?![^\W_])"
 _RX = re.IGNORECASE
+# Match dotted labels in place so punctuation removal never shifts rewrite spans.
+_DOTTED_ID_LABEL = r"(?:m\.[ \t]*r\.[ \t]*n|u\.[ \t]*h\.[ \t]*i\.[ \t]*d)"
+_DOTTED_ID = re.compile(_EDGE + rf"(?P<abbr>{_DOTTED_ID_LABEL})\.?" + _END, _RX)
+_ID_COMPATIBILITY = str.maketrans({
+    **{chr(codepoint + 0xFEE0): chr(codepoint) for codepoint in range(0x21, 0x7F)},
+    "\u2024": ".", "\ufe52": ".", "\u3002": ".", "\uff61": ".", "\u00a0": " ", "\u3000": " ",
+})
+_ID_FORMAT_CONTROLS = re.compile(r"[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]")
 _LABEL_IN_TEXT = re.compile(
-    _EDGE + r"(" + "|".join(
+    _EDGE + rf"({_DOTTED_ID_LABEL}|" + "|".join(
         re.escape(label) for label in sorted(_LABELS, key=lambda label: (-len(label), label))
         if label not in {"dr", "s o", "w o"}
     ) + r")\.?(?:[ \t]*\((?:attendant|guardian|caregiver|patient)\))?\s*[:=：]\s*(?=\S)", _RX,
@@ -149,6 +161,13 @@ _NAME_STOP = {
     "नाम", "आयु", "उम्र", "पता", "का", "की", "को", "है", "दवा", "बीपी",
 }
 _DOCTOR = re.compile(_EDGE + rf"(?:dr\.?|doctor|डॉ\.?|डॉक्टर)[ \t]+(?P<name>{_NAME})", _RX)
+_DOCTOR_SPECIALTY = re.compile(
+    r"[ \t]*\([ \t]*(?:(?:m\.?[ \t]*s\.?|general|laparoscopic|cardiac|cardiothoracic|"
+    r"plastic|vascular|paediatric|pediatric|orthopaedic|orthopedic|neurological|"
+    r"trauma|dental|oral|maxillofacial|ent|gi|gastrointestinal|colorectal|"
+    r"robotic|bariatric|oncologic|neuro|breast|endocrine|thoracic|urologic)[ \t]+"
+    r"){1,2}surgery[ \t]*\)", _RX,
+)
 _UNPUNCTUATED_NAME = re.compile(
     rf"(?m)^[ \t]*(?:pt\.?|patient name|मरीज़ का नाम|मरीज का नाम|रोगी का नाम|नाम)[ \t]+(?P<name>{_NAME})",
     _RX,
@@ -225,9 +244,23 @@ _BARE_ID = re.compile(
     _RX,
 )
 _LABELLED_ID = re.compile(
-    _EDGE + rf"(?P<label>mrn|uhid|patient id|hospital id|registration no\.?|claim id|policy no\.?|insurance id)"
-    rf"[ \t]*[:=#]?[ \t]+(?P<value>{_CODE})", _RX,
+    _EDGE + rf"(?P<label>{_DOTTED_ID_LABEL}\.?|mrn|uhid|patient id|hospital id|"
+    r"registration no\.?|claim id|policy no\.?|insurance id)"
+    rf"(?:[ \t]*[:=#][ \t]*|[ \t]+)(?P<value>{_CODE})", _RX,
 )
+_SCHEMA_ID_LABELS = (
+    "medical record number", "medical record no", "medical record id",
+    "registration number", "registration no", "registration id",
+    "patient id", "hospital id", "claim id", "policy no", "policy id", "insurance id", "mrn", "uhid",
+)
+_SCHEMA_ID_PATTERN = "|".join(r"[ \t_./-]+".join(map(re.escape, label.split()))
+                              for label in _SCHEMA_ID_LABELS)
+_HIDDEN_LABELLED_ID = re.compile(
+    _EDGE + rf"(?P<label>{_DOTTED_ID_LABEL}\.?|{_SCHEMA_ID_PATTERN})"
+    r"[ \t_./:=#^-]+(?P<value>[^\W_][\w./-]{2,95})(?![\w./-])", _RX,
+)
+_BASE64_PAYLOAD = re.compile(r"[A-Za-z0-9+/_-]+={0,2}")
+_MAX_METADATA_PAYLOAD = 64 * 1024
 _DATE = re.compile(r"\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}(?!\d)")
 _TIMESTAMP_DATE = re.compile(
     r"(?m)^[ \t]*\[?(?P<date>\d{4}[/.-]\d{1,2}[/.-]\d{1,2}|\d{1,2}[/.-]\d{1,2}[/.-](?:\d{4}|\d{2}))"
@@ -257,6 +290,10 @@ _CLINICAL = re.compile(
 
 
 def _label(value: str) -> str:
+    if not value.isascii():
+        value = _ID_FORMAT_CONTROLS.sub("", value.translate(_ID_COMPATIBILITY))
+    if "." in value:
+        value = _DOTTED_ID.sub(lambda match: re.sub(r"[. \t]", "", match["abbr"]), value)
     value = re.sub(r"([a-z])([A-Z])", r"\1 \2", value)
     return re.sub(r"[^a-z0-9\u0900-\u097f]+", " ", matching_text(value)).strip()
 
@@ -316,6 +353,15 @@ def _trim(text: str, start: int, end: int) -> tuple[int, int]:
     return start, end
 
 
+def _identifier_scan_view(text: str):
+    """Fold one-to-one compatibility characters and map omitted controls."""
+    if text.isascii():
+        return text, ()
+    folded = text.translate(_ID_COMPATIBILITY)
+    omitted = array("I", (m.start() - i for i, m in enumerate(_ID_FORMAT_CONTROLS.finditer(folded))))
+    return (_ID_FORMAT_CONTROLS.sub("", folded) if omitted else folded), omitted
+
+
 def _scan_text(
     surface: TextSurface,
     role: str,
@@ -333,12 +379,16 @@ def _scan_text(
         if start != end and matching_text(text[start:end]) not in _UNKNOWN:
             sensitive.append((Target(kind, surface.path, surface.channel, start, end), role))
 
+    def protect_doctor(start: int, end: int) -> None:
+        specialty = _DOCTOR_SPECIALTY.match(text, end)
+        protect("DOCTOR", start, specialty.end() if specialty else end)
+
     for match in _CLINICAL.finditer(text):
         protect("CLINICAL", *match.span())
     for match in _DOCTOR.finditer(text):
         bounds = _span_name(text, *match.span("name"))
         if bounds:
-            protect("DOCTOR", match.start(), bounds[1])
+            protect_doctor(match.start(), bounds[1])
     labels = list(_LABEL_IN_TEXT.finditer(text))
     for index, match in enumerate(labels):
         kind = _kind(_label(match[1]))
@@ -355,7 +405,10 @@ def _scan_text(
         if kind in {"DOCTOR", "CLINICAL"}:
             bounds = _span_name(text, start, end) if kind == "DOCTOR" else _trim(text, start, end)
             if bounds and bounds[0] < bounds[1]:
-                protect(kind, *bounds)
+                if kind == "DOCTOR":
+                    protect_doctor(*bounds)
+                else:
+                    protect(kind, *bounds)
         elif kind in _RELATIVES or kind in _NAME_PARTS or kind == "PATIENT_NAME":
             bounds = _span_name(text, start, end)
             if bounds:
@@ -424,9 +477,22 @@ def _scan_text(
         if date_match:
             kind = _kind(_label(match["label"])) or "DOB"
             add(kind, *date_match.span(), role)
-    for match in _LABELLED_ID.finditer(text):
+    identifier_text, omitted = _identifier_scan_view(text)
+
+    def add_labelled_id(match: re.Match) -> None:
+        start, end = match.span("value")
+        # An omission at the end boundary belongs to the following text.
+        add(_kind(_label(match["label"])), start + bisect_right(omitted, start),
+            end + bisect_right(omitted, end - 1), role)
+
+    for match in _LABELLED_ID.finditer(identifier_text):
         if any(char.isdecimal() for char in match["value"]):
-            add(_kind(_label(match["label"])), *match.span("value"), role)
+            add_labelled_id(match)
+    if surface.channel in {"filename", "header", "key", "metadata"}:
+        for match in _HIDDEN_LABELLED_ID.finditer(identifier_text):
+            value = match["value"]
+            if sum(char.isalnum() for char in value) >= 4 and any(char.isdecimal() for char in value):
+                add_labelled_id(match)
     for pattern, kind in (
         (_EMAIL, "EMAIL"), (_ABHA, "ABHA_NUMBER"), (_AADHAAR, "AADHAAR"),
         (_PAN, "PAN"), (_PHONE, "PHONE"), (_BARE_ID, "MRN"),
@@ -449,6 +515,23 @@ def _scan_text(
         for match in re.finditer(pattern, text, _RX):
             add(kind, *match.span(), role)
     return sensitive, protected
+
+
+def _sensitive_metadata_payload(surface: TextSurface, names: tuple[tuple[str, str], ...]) -> bool:
+    """Inspect one level of standalone Base64 in metadata without releasing decoded text."""
+    compact = "".join(surface.text.split())
+    if len(compact) < 24 or not _BASE64_PAYLOAD.fullmatch(compact):
+        return False
+    if len(compact) > _MAX_METADATA_PAYLOAD:
+        return True
+    try:
+        decoded = b64decode(compact + "=" * (-len(compact) % 4), altchars=b"-_", validate=True)
+        text = decoded.decode("utf-8")
+    except (InvalidBase64, UnicodeDecodeError):
+        return False
+    decoded_surface = TextSurface(text, "metadata", surface.path)
+    hits, clinical = _scan_text(decoded_surface, "patient", names)
+    return bool(_select_spans(hits, clinical))
 
 
 _PRIORITY = {
@@ -510,7 +593,7 @@ def detect_record(
             parts.setdefault(kind, []).append(value)
         elif kind == "RELATIVE_NAME" and role != "clinician":
             identity.append(IdentityEvidence(kind, value, role if role != "patient" else "relative"))
-        elif kind in _IDENTITY and role == "patient":
+        elif kind in (_IDENTITY | ENCOUNTER_DATES) and role == "patient":
             identity.append(IdentityEvidence(kind, value))
 
     def scan(
@@ -642,9 +725,11 @@ def detect_record(
                 prefix = _DATE.match(value)
                 if prefix and value[prefix.end():prefix.end() + 1] in {"T", "t"}:
                     sensitive.append(Target(kind, path, start=prefix.start(), end=prefix.end()))
+                    if kind in ENCOUNTER_DATES:
+                        collect(kind, prefix[0], role, path)
                     continue
             sensitive.append(Target("PATIENT_NAME" if kind in _NAME_PARTS else target_kind, path))
-            if target_kind == "DOB" and path and isinstance(path[-1], str):
+            if target_kind in ENCOUNTER_DATES | {"DOB"} and path and isinstance(path[-1], str):
                 day_order = date_order_hint(path[-1])
                 if day_order is not None:
                     text = birth_date(text, day_order)
@@ -663,7 +748,9 @@ def detect_record(
         (item.kind, item.value) for item in identity if item.kind in {"PATIENT_NAME", "RELATIVE_NAME"}
     ))
     for surface in (*hidden, *surfaces):
-        if surface.channel != "content" and surface.label and _kind(_label(surface.label)) in (
+        if surface.channel == "metadata" and _sensitive_metadata_payload(surface, names):
+            sensitive.append(Target("ATTACHMENT_DATA", surface.path, "metadata"))
+        elif surface.channel != "content" and surface.label and _kind(_label(surface.label)) in (
             _IDENTITY | _NAME_PARTS | set(_RELATIVES) | {"ADDRESS", "INSURANCE_ID", "EMAIL"}
         ):
             kind = _kind(_label(surface.label))

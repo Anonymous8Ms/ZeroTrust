@@ -51,6 +51,12 @@ class WorkItem:
     detections: tuple[DetectionResult, ...]
     envelope: ParsedRecord | None = None
     fallback_day_first: bool | None = None
+    file_metadata: DetectionResult | None = None
+
+    def detections_with_metadata(self):
+        yield from self.detections
+        if self.file_metadata is not None:
+            yield self.file_metadata
 
 
 def json_keys(value, path=()):
@@ -234,7 +240,7 @@ def filename_surfaces(relative: Path):
 def safe_path(item, relative, secret):
     parts = relative.parts
     sensitive = {
-        hit.path[0] for detection in item.detections for hit in detection.sensitive_targets
+        hit.path[0] for detection in item.detections_with_metadata() for hit in detection.sensitive_targets
         if hit.channel == "filename"
     }
     safe_parts = []
@@ -266,7 +272,12 @@ def run_pipeline(source: Path, output: Path, secret: bytes, policy: Policy) -> d
         if document.outer_content is not None:
             envelope = ParsedRecord("envelope:" + path.relative_to(source).as_posix(),
                                     path, "", "json", document.outer_content)
-        items.append(WorkItem(path, document, detections, envelope, day_first))
+        file_metadata = None
+        if not document.reason and not document.records:
+            headers = tuple(TextSurface(key, "header", (key,)) for key in document.table_headers)
+            file_record = ParsedRecord("file-metadata", path, "", "text", "")
+            file_metadata = detect_record(file_record, surfaces=(*path_surfaces, *headers))
+        items.append(WorkItem(path, document, detections, envelope, day_first, file_metadata))
     note_orders = defaultdict(set)
     for item in items:
         origin = note_source(item)
@@ -293,7 +304,7 @@ def run_pipeline(source: Path, output: Path, secret: bytes, policy: Policy) -> d
     for item in items:
         document = item.document
         entities.update(
-            hit.kind for detection in item.detections for hit in detection.sensitive_targets
+            hit.kind for detection in item.detections_with_metadata() for hit in detection.sensitive_targets
             if hit.kind not in (DATE_KINDS - {"DOB"}) | {"AGE", "DISTRICT", "TEHSIL", "VILLAGE", "PIN"}
         )
         try:
@@ -306,7 +317,7 @@ def run_pipeline(source: Path, output: Path, secret: bytes, policy: Policy) -> d
             else:
                 folders, filename = safe_path(item, item.source.relative_to(source), secret)
                 headers = dict.fromkeys(
-                    hit.path[-1] for result in item.detections for hit in result.sensitive_targets
+                    hit.path[-1] for result in item.detections_with_metadata() for hit in result.sensitive_targets
                     if hit.channel == "header"
                 )
                 file_edits = [FilenameEdit(filename), *(

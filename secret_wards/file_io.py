@@ -55,6 +55,13 @@ class IngestedFile:
     _record_paths: dict[str, PathParts] = field(default_factory=dict)
     outer_content: object = None
 
+    @property
+    def table_headers(self) -> tuple[str, ...]:
+        """Expose table headers even when the file contains no data rows."""
+        if isinstance(self._content, Table):
+            return self._content.header
+        return ()
+
 
 def discover(input_root):
     """Yield file candidates in stable order without following symbolic links."""

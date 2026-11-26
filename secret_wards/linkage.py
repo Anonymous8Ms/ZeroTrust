@@ -25,10 +25,15 @@ class _Profile:
     births: frozenset[str]
     national_ids: frozenset[tuple[str, str]]
     local_ids: frozenset[tuple[tuple[str, str], str]]
+    hospital: str
+    record_ids: frozenset[tuple[str, str]]
+    encounter: tuple[str, str] | None
 
 
 def _profile(detection: DetectionResult) -> _Profile:
     names, relatives, phones, births, national_ids, local_ids = (set() for _ in range(6))
+    record_ids = set()
+    encounter_dates = {"ADMISSION_DATE": set(), "DISCHARGE_DATE": set()}
     hospital = identifier(detection.hospital) if detection.hospital else ""
     for item in detection.identity_evidence:
         if item.kind == "PATIENT_NAME" and item.role == "patient":
@@ -49,6 +54,12 @@ def _profile(detection: DetectionResult) -> _Profile:
             )
             if normalized:
                 births.add(normalized)
+        elif item.kind in encounter_dates:
+            normalized = birth_date(
+                item.value, detection.day_first, fallback_day_first=detection.fallback_day_first,
+            )
+            if normalized:
+                encounter_dates[item.kind].add(normalized)
         elif item.kind in {"AADHAAR", "ABHA_NUMBER", "PAN", "MRN", "UHID"}:
             normalized = identifier(item.value)
             if item.kind in {"AADHAAR", "ABHA_NUMBER"}:
@@ -58,11 +69,19 @@ def _profile(detection: DetectionResult) -> _Profile:
             elif item.kind == "PAN":
                 if len(normalized) == 10 and normalized[:5].isalpha() and normalized[5:9].isdecimal() and normalized[9].isalpha():
                     national_ids.add((item.kind, normalized))
-            elif hospital and len(normalized) >= 3 and any(char.isdecimal() for char in normalized):
-                local_ids.add(((hospital, item.kind), normalized))
+            elif len(normalized) >= 3 and any(char.isdecimal() for char in normalized):
+                record_ids.add((item.kind, normalized))
+                if hospital:
+                    local_ids.add(((hospital, item.kind), normalized))
+    admissions, discharges = encounter_dates.values()
+    encounter = None
+    if len(admissions) == len(discharges) == 1:
+        start, end = next(iter(admissions)), next(iter(discharges))
+        if start <= end:
+            encounter = (start, end)
     return _Profile(
         frozenset(names), frozenset(relatives), frozenset(phones), frozenset(births),
-        frozenset(national_ids), frozenset(local_ids),
+        frozenset(national_ids), frozenset(local_ids), hospital, frozenset(record_ids), encounter,
     )
 
 
@@ -135,6 +154,9 @@ def _blocks(profile: _Profile, shared_phones: set[str]) -> Iterable[tuple[str, .
         yield "national", scheme, value
     for (hospital, scheme), value in profile.local_ids:
         yield "local", hospital, scheme, value
+    if profile.encounter and profile.names:
+        for scheme, value in profile.record_ids:
+            yield "encounter", scheme, value, *profile.encounter
     for phone in profile.phones - shared_phones:
         yield "phone", phone
     relatives = _tokens(name for _, name in profile.relatives)
@@ -145,7 +167,9 @@ def _blocks(profile: _Profile, shared_phones: set[str]) -> Iterable[tuple[str, .
             yield "relative", token, relative
 
 
-def _score(left: _Profile, right: _Profile, shared_phones: set[str]) -> int:
+def _score(
+    left: _Profile, right: _Profile, shared_phones: set[str], *, allow_encounter: bool = True,
+) -> int:
     if _conflict(left, right):
         return 0
     if left.national_ids & right.national_ids:
@@ -165,6 +189,13 @@ def _score(left: _Profile, right: _Profile, shared_phones: set[str]) -> int:
     phone = bool((left.phones & right.phones) - shared_phones)
     if _same_scope_conflict(left.local_ids, right.local_ids) and not (dob and relative >= 2):
         return 0
+    if (
+        allow_encounter and name == 3 and (not left.hospital or not right.hospital)
+        and left.encounter is not None and left.encounter == right.encounter
+        and len(left.record_ids) == len(right.record_ids) == 1
+        and left.record_ids == right.record_ids
+    ):
+        return 61
     if dob and (name >= 2 or relative or phone):
         return 70 + 4 * bool(relative) + 4 * phone + name
     if name >= 2 and phone and relative:
@@ -214,7 +245,7 @@ def link_records(
     for index, profile in enumerate(profiles):
         if index in inconsistent:
             continue
-        if _score(profile, profile, shared_phones):
+        if _score(profile, profile, shared_phones, allow_encounter=False):
             representative = unique.setdefault(profile, index)
             if representative != index:
                 aliases[index] = representative
@@ -228,6 +259,8 @@ def link_records(
     neighbors: dict[int, list[tuple[list[int], int]]] = defaultdict(list)
     for block, members in buckets.items():
         limit = _MAX_ID_BLOCK if block[0] in {"local", "national"} else _MAX_WEAK_BLOCK
+        if block[0] == "encounter" and all(profiles[index].hospital for index in members):
+            continue
         if len(members) > limit:
             stats.overfull_blocks += 1
             continue
@@ -282,7 +315,7 @@ def link_records(
         representative = aliases.get(index, index)
         profile = profiles[representative]
         root = roots[representative]
-        corroborated = bool(_score(profile, profile, shared_phones))
+        corroborated = bool(_score(profile, profile, shared_phones, allow_encounter=False))
         if representative in ambiguous or representative in inconsistent or not (
             root in groups or repeated[representative] or corroborated
         ):

@@ -315,6 +315,120 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(observation["valueQuantity"], {"value": 105, "unit": "mg/dL"})
             self.assertIn("40-49 yrs", observation["text"]["div"])
 
+    def test_sanitizes_labelled_names_on_file_and_schema_surfaces(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "input"
+            source.mkdir()
+            identifiers = ("DEMO-HEADER-4021", "DEMO-PATH-4022", "DEMO-KEY-4023")
+            header, filename, key = identifiers
+            (source / f"patient-id_{filename}.csv").write_text(f"MRN_{header},diagnosis\n", encoding="utf-8")
+            (source / "visits.json").write_text(json.dumps({"visits": [
+                {f"MRN / {key}~alias": "unknown", "diagnosis": "migraine"},
+            ]}), encoding="utf-8")
+            output = root / "out"
+            run(output, "synthetic-surface-key", source)
+            self.assertEqual(report(output)["counts"]["files_sanitized"], 2)
+            files, _ = stable_output(output)
+            observable = b"\n".join([
+                *(name.encode() + b"\n" + content for name, content in files.items()),
+                (output / "report.json").read_bytes(),
+            ])
+            for identifier in identifiers:
+                self.assertNotIn(identifier.encode(), observable)
+            self.assertIn(b"diagnosis", observable)
+            self.assertIn(b"migraine", observable)
+
+    def test_redacts_dotted_record_labels_in_schema_paths_and_values(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "input"
+            source.mkdir()
+            identifiers = (
+                "DEMO-DOTTED-PATH-6142", "DEMO-DOTTED-HEADER-6153",
+                "DEMO-DOTTED-KEY-6164", "DEMO-DOTTED-NOTE-6175", "DEMO-DOTTED-FIELD-6186",
+            )
+            filename, header, key, note, field = identifiers
+            (source / f"M.R.N._{filename}.csv").write_text(
+                f"M.R.N. / {header},diagnosis\n", encoding="utf-8",
+            )
+            (source / "visits.json").write_text(json.dumps({"visits": [
+                {f"M.R.N. = {key}~alias": "unknown", "M.R.N.": field, "diagnosis": "migraine"},
+            ]}), encoding="utf-8")
+            (source / "note.txt").write_text(
+                f"U. H. I. D.: {note}\nBP 120/80\n", encoding="utf-8",
+            )
+            output = root / "out"
+            run(output, "synthetic-dotted-test-key", source)
+            self.assertEqual(report(output)["counts"]["files_sanitized"], 3)
+            files, _ = stable_output(output)
+            visible = b"\n".join([
+                *(path.encode() + b"\n" + content for path, content in files.items()),
+                (output / "report.json").read_bytes(),
+            ])
+            for identifier in identifiers:
+                self.assertNotIn(identifier.encode(), visible)
+            self.assertIn(b"U. H. I. D.: [REDACTED]", visible)
+            self.assertIn(b"BP 120/80", visible)
+            self.assertIn(b"migraine", visible)
+
+    def test_redacts_compatible_labels_and_sensitive_base64_metadata(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "input"
+            source.mkdir()
+            header, key, filename, note, encoded = (
+                "SYN-UNICODE-5142", "SYN-CARET-5153", "SYN-FILENAME-5164",
+                "SYN-INVISIBLE-5175", "SYN-OPAQUE-5186",
+            )
+            (source / "table.csv").write_text(
+                f"Ｍ．Ｒ．Ｎ． / {header},diagnosis\nexample,migraine\n", encoding="utf-8",
+            )
+            (source / f"medical-record-number_{filename}.txt").write_text(
+                "Diagnosis: asthma\n", encoding="utf-8",
+            )
+            safe_payload = base64.b64encode(b"Clinical observations: BP 128/84; Hb 12.00 g/dL").decode()
+            private_payload = base64.b64encode(f"MRN: {encoded}\n".encode()).decode()
+            (source / "visits.json").write_text(json.dumps({
+                "metadata": {"opaque": private_payload, "clinical": safe_payload},
+                "visits": [{f"M․R․N․^{key}": "value", "diagnosis": "migraine"}],
+            }, ensure_ascii=False), encoding="utf-8")
+            split_value = note.replace("-INVISIBLE-", "-IN\u200bVISIBLE-")
+            (source / "note.txt").write_text(
+                f"मरीज़\nM\u200bR\u200bN:{split_value}\nBP 126/84\n", encoding="utf-8",
+            )
+            output = root / "out"
+            run(output, "synthetic-extended-identifier-key", source)
+            self.assertEqual(report(output)["counts"]["files_sanitized"], 4)
+            files, _ = stable_output(output)
+            visible = b"\n".join([
+                *(path.encode() + b"\n" + content for path, content in files.items()),
+                (output / "report.json").read_bytes(),
+            ])
+            for identifier in (header, key, filename, note, encoded, private_payload, split_value):
+                self.assertNotIn(identifier.encode(), visible)
+            self.assertIn("M\u200bR\u200bN:[REDACTED]\nBP 126/84".encode(), visible)
+            visits = json.loads((output / "sanitized" / "visits.json").read_text(encoding="utf-8"))
+            self.assertEqual(base64.b64decode(visits["metadata"]["opaque"], validate=True), b"[REDACTED]")
+            self.assertEqual(visits["metadata"]["clinical"], safe_payload)
+            self.assertEqual(visits["visits"][0]["diagnosis"], "migraine")
+
+    def test_preserves_doctor_specialty_without_protecting_patient_text_in_parentheses(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "input"
+            source.mkdir()
+            (source / "consult.txt").write_text(
+                "Consultant: Dr. Anaya Pariksha (MS Surgery) (Patient name: Manoj Pariksha)\nBP 120/80\n",
+                encoding="utf-8",
+            )
+            output = root / "out"
+            run(output, "synthetic-clinician-key", source)
+            exported = (output / "sanitized" / "consult.txt").read_text(encoding="utf-8")
+            self.assertIn("Dr. Anaya Pariksha (MS Surgery)", exported)
+            self.assertNotIn("Manoj Pariksha", exported)
+            self.assertIn("BP 120/80", exported)
+
     def test_legacy_table_encoding_and_negative_age_are_exported(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

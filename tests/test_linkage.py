@@ -63,6 +63,32 @@ class LinkageTests(unittest.TestCase):
         self.assertNotEqual(linked["one"], linked["different-scheme"])
         self.assertIsNone(linked["missing"])
 
+    def test_unscoped_id_needs_a_name_and_the_same_encounter(self):
+        evidence = {
+            "name": "Tara Pariksha", "mrn": "SSD-CHECK-1234",
+            "admitted": "2026-10-14", "discharged": "2026-10-18",
+        }
+        detections = [
+            detect("intake", evidence),
+            detect("matching-note", {**evidence, "name": "तारा परीक्षा"}),
+            detect("reused-id", {**evidence, "admitted": "2026-12-14", "discharged": "2026-12-18"}),
+            detect("without-discharge", {**evidence, "discharged": ""}),
+        ]
+        linked = link_records(detections)
+        self.assertIsNotNone(linked["intake"])
+        self.assertEqual(linked["intake"], linked["matching-note"])
+        self.assertIsNone(linked["reused-id"])
+        self.assertIsNone(linked["without-discharge"])
+
+        # The unscoped repeat cannot silently bridge two incompatible facilities.
+        distinct = link_records([
+            detect("a", evidence, hospital="Facility A"),
+            detect("b", evidence, hospital="Facility B"),
+            detect("unknown", evidence),
+        ])
+        self.assertNotEqual(distinct["a"], distinct["b"])
+        self.assertIsNone(distinct["unknown"])
+
     def test_cluster_requires_support_between_all_members(self):
         detections = [
             detect("a", {"name": "Meera Kapoor", "dob": "1979-09-16"}),
