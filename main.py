@@ -10,9 +10,18 @@ from secret_wards.privacy import load_policy
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Sanitise synthetic hospital records.")
-    parser.add_argument("--input", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--input", type=Path, help="Synthetic input folder")
+    parser.add_argument("--output", type=Path, help="Empty or new output folder")
+    parser.add_argument("--interactive", action="store_true", help="Open the terminal home screen")
     args = parser.parse_args()
+    if args.interactive:
+        if args.input is not None or args.output is not None:
+            parser.error("--interactive cannot be combined with --input or --output")
+        from secret_wards.terminal import run_home
+
+        return run_home(Path(__file__).resolve().parent)
+    if args.input is None or args.output is None:
+        parser.error("--input and --output are required unless using --interactive")
     secret = os.environ.get("RAKSHA_SECRET")
     if not secret or not secret.strip():
         parser.error("Set RAKSHA_SECRET to a non-empty secret in your environment before running.")

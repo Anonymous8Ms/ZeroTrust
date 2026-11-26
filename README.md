@@ -35,6 +35,18 @@ Reuse the same key when you need reproducible pseudonyms and date offsets.
 A missing or blank key causes the CLI to exit with status 2 before creating
 any output.
 
+## Terminal home screen
+
+```sh
+python3 main.py --interactive
+```
+
+Use the menu to process a synthetic input folder, run the bundled demo, or
+view aggregate counts from an existing `report.json`. Runs on a folder you
+select require `RAKSHA_SECRET` to be set. The bundled demo uses a fresh key
+and prints the location of its temporary output folder. The menu runs
+offline, and the regular CLI remains available for scripts.
+
 ## Output
 
 | Path | Contents |
