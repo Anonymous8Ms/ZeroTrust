@@ -23,10 +23,15 @@ from .adapters.tabular import Table, parse_table, rewrite_table, write_table
 from .adapters.text_notes import check_text, decode_text, rewrite_note
 
 _FORMATS = {".csv": "csv", ".tsv": "tsv", ".txt": "text", ".json": "json", ".fhir": "fhir"}
-_SAFE_NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}")
+_SAFE_NAME = re.compile(r"[a-zA-Z0-9](?:[a-zA-Z0-9_. ()-]{0,126}[a-zA-Z0-9_()-])?")
 _RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {
     f"{prefix}{i}" for prefix in ("COM", "LPT") for i in range(1, 10)
 }
+
+def safe_output_component(part):
+    return (isinstance(part, str) and _SAFE_NAME.fullmatch(part)
+            and part.split(".")[0].upper() not in _RESERVED_NAMES)
+
 
 Edit = FieldEdit | FilenameEdit | HeaderEdit | KeyEdit | SpanEdit
 
@@ -123,7 +128,7 @@ class FileAdapters:
                 raise Reject("unsupported_format")
             if raw is None:
                 raise Reject("input_too_large")
-            text = decode_text(raw, encoding)
+            text = decode_text(raw, encoding, allow_cp1252=file_format in {"csv", "tsv"})
             root_relative = path.relative_to(input_root).as_posix()
             file_key = hashlib.sha256(os.fsencode(root_relative) + b"\0" + digest.encode()).hexdigest()
             records = []
@@ -143,6 +148,8 @@ class FileAdapters:
                 for index, row in enumerate(content.rows):
                     add(f"row:{index}", dict(zip(content.header, row)), (index,))
             elif file_format == "text":
+                if not text.strip():
+                    raise Reject("empty_input")
                 content = text
                 add("doc", text, ())
             else:
@@ -184,8 +191,7 @@ class FileAdapters:
             return result(document.reason)
         try:
             content, filename, locations = _rewrite(document, plans, file_edits)
-            if any(not isinstance(part, str) or not _SAFE_NAME.fullmatch(part)
-                   for part in folders):
+            if any(not safe_output_component(part) for part in folders):
                 raise Reject("unsafe_output_path")
             self._publish(document._format, content, filename, Path(output_root), folders)
         except Reject as exc:
@@ -311,8 +317,7 @@ def _rewrite(document, plans, file_edits):
     if filename is None:
         filename = f"file-{uuid.uuid4().hex}{document._suffix}"
     if (
-        not _SAFE_NAME.fullmatch(filename) or Path(filename).suffix.lower() != document._suffix
-        or filename.split(".")[0].upper() in _RESERVED_NAMES
+        not safe_output_component(filename) or Path(filename).suffix.lower() != document._suffix
     ):
         raise Reject("unsafe_output_path")
 

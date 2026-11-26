@@ -79,7 +79,7 @@ _LABELS = _rules({
     "RELATION": "relation|relationship|relative relation|रिश्ता|संबंध",
     "PHONE": "phone|phone number|telephone|mobile|mobile no|mobile number|contact|contact no|contact number|cell|whatsapp|फोन|फ़ोन|फोन नंबर|मोबाइल|मोबाइल नंबर|दूरभाष|संपर्क",
     "ADDRESS": "address|full address|postal address|residential address|home address|street|address note|address line|house no|house number|mohalla|pata|पता|घर का पता|मोहल्ला",
-    "VILLAGE": "village|gram|gram mohalla|village mohalla|gaon|ग्राम|गांव|गाँव",
+    "VILLAGE": "village|city|gram|gram mohalla|village mohalla|gaon|ग्राम|गांव|गाँव",
     "TEHSIL": "tehsil|taluk|block|तहसील",
     "DISTRICT": "district|distt|dist|jila|location|जिला|ज़िला",
     "PIN": "pin|pincode|pin code|zip|postal code|पिन|पिन कोड",
@@ -93,12 +93,15 @@ _LABELS = _rules({
     "REFERENCE_NAME": "patient reference display",
     "DOB": "dob|d o b|birthdate|birth date|birthdate|date of birth|janm tithi|जन्म तिथि|जन्म तारीख|जन्मतिथि",
     "AGE": "age|age years|umar|उम्र|आयु",
-    "DATE": "admission|admission date|admit date|admitted|discharge|discharge date|discharged|visit date|registration date|reg date|registered|registered on|collection date|admitted on|discharged on|प्रवेश|भर्ती|छुट्टी|भर्ती की तिथि|छुट्टी की तिथि",
+    "ADMISSION_DATE": "admission|admission date|date of admission|admit date|admitted|admitted on|प्रवेश|भर्ती|भर्ती की तिथि|भर्ती की तारीख",
+    "DISCHARGE_DATE": "discharge|discharge date|date of discharge|discharged|discharged on|छुट्टी|छुट्टी की तिथि|छुट्टी की तारीख",
+    "DATE": "date|visit date|registration date|reg date|registered|registered on|collection date|collected|collected on|reported on|report date|prescription date|दिनांक|तारीख",
     "EMAIL": "email|e mail|email address|ईमेल",
     "HOSPITAL": "hospital|hospital name|facility|facility name|अस्पताल|अस्पताल का नाम",
     "DOCTOR": "doctor|doctor name|physician|dr|consultant|clinician|practitioner|attending|डॉक्टर|चिकित्सक",
     "CLINICAL": "diagnosis|diagnoses|complaint|complaints|symptom|symptoms|procedure|procedures|medication|medications|medicines|medicine|drug|dose|dosage|frequency|rx|vitals|bp|pulse|hr|temperature|spo2|hba1c|hb|hemoglobin|creatinine|glucose|lab value|lab result|result|length of stay|los|निदान|दवा|शिकायत|खुराक",
 })
+DATE_KINDS = {"DOB", "DATE", "ADMISSION_DATE", "DISCHARGE_DATE", "TIMESTAMP_DATE"}
 _SOURCE_PATHS = {"source path", "source file", "file name", "filename", "export path"}
 _ATTACHMENTS = {"attachment", "attachments", "document attachment"}
 _METADATA = {"metadata", "meta", "export metadata", "export meta"} | _SOURCE_PATHS | _ATTACHMENTS
@@ -107,7 +110,7 @@ _IDENTITY = {"PATIENT_NAME", "RELATIVE_NAME", "PHONE", "AADHAAR", "ABHA_NUMBER",
 _NAME_PARTS = {"FIRST_NAME", "MIDDLE_NAME", "LAST_NAME"}
 _RELATIVES = {"FATHER_NAME": "father", "MOTHER_NAME": "mother", "SPOUSE_NAME": "spouse", "RELATIVE_NAME": "relative"}
 
-_WORD = r"[A-Za-z\u0900-\u0963\u0970-\u097f][A-Za-z\u0900-\u0963\u0970-\u097f.'’\-]*"
+_WORD = r"[^\W\d_](?:[^\W\d_]|[\u0300-\u036f\u0900-\u0963.'’\-])*"
 _NAME = rf"{_WORD}(?:[ \t]+{_WORD}){{0,5}}"
 _NAME_PATTERN = re.compile(_NAME)
 _TITLE = r"(?:mr|mrs|ms|shri|sri|smt|श्री|श्रीमती)\.?"
@@ -226,13 +229,17 @@ _LABELLED_ID = re.compile(
     rf"[ \t]*[:=#]?[ \t]+(?P<value>{_CODE})", _RX,
 )
 _DATE = re.compile(r"\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}(?!\d)")
+_TIMESTAMP_DATE = re.compile(
+    r"(?m)^[ \t]*\[?(?P<date>\d{4}[/.-]\d{1,2}[/.-]\d{1,2}|\d{1,2}[/.-]\d{1,2}[/.-](?:\d{4}|\d{2}))"
+    r"(?=,?[ \t]+\d{1,2}:\d{2}\b)"
+)
 _DATE_LABEL = re.compile(_EDGE + r"(?P<label>dob|born on|birth date|birthdate|date of birth|जन्मतिथि|जन्म तिथि|admitted(?: on)?|discharged(?: on)?|visit date|भर्ती|छुट्टी)[ \t]*[:=]?[ \t]+(?=\d)", _RX)
 _ADDRESS = re.compile(
     _EDGE + r"(?:h\.?[ \t]*no\.?|house (?:no\.?|number)|mohalla|village|gram|tehsil|distt?\.?|district|पता|ग्राम|गाँव|गांव|मोहल्ला|तहसील|जिला|ज़िला)"
     r"[ \t]*[:=]?[ \t]+[^\n,;|]{1,100}", _RX,
 )
 _AGE_NUMBER = re.compile(
-    r"\d{1,3}(?=[ \t]*(?:$|(?:years?|yrs?\.?|y|वर्ष|साल)(?![^\W_])"
+    r"-?\d{1,3}(?=[ \t]*(?:$|(?:years?|yrs?\.?|y|वर्ष|साल)(?![^\W_])"
     r"|/[ \t]*(?:f(?:emale)?|m(?:ale)?|महिला|पुरुष)(?![^\W_])))",
     _RX,
 )
@@ -363,7 +370,7 @@ def _scan_text(
                     add("RELATIVE_NAME", *bounds, _RELATIVES[kind])
                 else:
                     add("RELATIVE_NAME" if role == "relative" else "PATIENT_NAME", *bounds, role)
-        elif kind in {"DOB", "DATE"}:
+        elif kind in DATE_KINDS:
             date_match = _DATE.match(text, start, end)
             if date_match:
                 add(kind, *date_match.span(), role)
@@ -410,12 +417,12 @@ def _scan_text(
             if bounds:
                 add("REFERENCE_NAME", *bounds)
                 add("AGE", *match.span("age"))
+    for timestamp in _TIMESTAMP_DATE.finditer(text):
+        add("TIMESTAMP_DATE", *timestamp.span("date"), role)
     for match in _DATE_LABEL.finditer(text):
         date_match = _DATE.match(text, match.end())
         if date_match:
-            kind = "DOB" if matching_text(match["label"]) in {
-                "dob", "born on", "date of birth", "birth date", "जन्मतिथि", "जन्म तिथि",
-            } else "DATE"
+            kind = _kind(_label(match["label"])) or "DOB"
             add(kind, *date_match.span(), role)
     for match in _LABELLED_ID.finditer(text):
         if any(char.isdecimal() for char in match["value"]):
@@ -564,6 +571,10 @@ def detect_record(
                 if not isinstance(key, str):
                     continue
                 child_label = _label(key)
+                if record.format == "fhir" and resource_type == "Encounter" and key == "period":
+                    child_label = "encounter period"
+                if label == "encounter period" and key in {"start", "end"}:
+                    child_label = "admission date" if key == "start" else "discharge date"
                 if key == "value" and is_phone:
                     child_label = "phone"
                 elif key == "value" and label == "identifier" and role == "patient":
@@ -626,6 +637,11 @@ def detect_record(
                 age = _AGE_NUMBER.match(value, len(value) - len(value.lstrip()))
                 if age and age[0] != text:
                     sensitive.append(Target(kind, path, start=age.start(), end=age.end()))
+                    continue
+            if kind in DATE_KINDS and isinstance(value, str):
+                prefix = _DATE.match(value)
+                if prefix and value[prefix.end():prefix.end() + 1] in {"T", "t"}:
+                    sensitive.append(Target(kind, path, start=prefix.start(), end=prefix.end()))
                     continue
             sensitive.append(Target("PATIENT_NAME" if kind in _NAME_PARTS else target_kind, path))
             if target_kind == "DOB" and path and isinstance(path[-1], str):
