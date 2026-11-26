@@ -44,6 +44,29 @@ def parse_json(text):
         raise Reject("malformed_json") from None
 
 
+_INLINE_DATA_URL = re.compile(
+    r"""(?<![\w+.-])data:(?:[^,;\s/<>"']+/[^,;\s/<>"']+)?(?:;[^,\s<>"']*)?,""",
+    re.IGNORECASE,
+)
+
+
+def reject_inline_data_urls(value):
+    """Reject inline data in keys or values before publishing JSON or FHIR."""
+    pending = [iter((value,))]
+    while pending:
+        try:
+            child = next(pending[-1])
+        except StopIteration:
+            pending.pop()
+            continue
+        if isinstance(child, dict):
+            pending.extend((iter(child), iter(child.values())))
+        elif isinstance(child, list):
+            pending.append(iter(child))
+        elif isinstance(child, str) and _INLINE_DATA_URL.search(child):
+            raise Reject("embedded_attachment")
+
+
 def write_json(value, stream):
     """Emit Decimal values as JSON numbers without rounding clinical values."""
     def emit(node):
