@@ -17,7 +17,8 @@ from .adapters._edits import PathParts
 from .adapters._errors import Reject
 from .adapters.fhir import rewrite_references, validate_fhir
 from .adapters.json_records import (
-    final_pointer, get, parse_json, pointer, record_roots, rewrite_json, write_json,
+    final_pointer, get, parse_json, pointer, record_roots, reject_opaque_attachments,
+    rewrite_json, write_json,
 )
 from .adapters.tabular import Table, parse_table, rewrite_table, write_table
 from .adapters.text_notes import check_text, decode_text, rewrite_note
@@ -147,6 +148,7 @@ class FileAdapters:
                 add("doc", text, ())
             else:
                 content = parse_json(text)
+                reject_opaque_attachments(content)
                 if file_format == "json" and isinstance(content, dict) and "resourceType" in content:
                     file_format = "fhir"
                 if file_format == "fhir":
