@@ -58,6 +58,9 @@ directory, the CLI returns a failure status if every file is quarantined.
 range and location mappings. Linked records receive a consistent date offset
 per patient. Unlinked records receive an offset scoped to the encounter so
 admission and discharge intervals remain intact. Unmapped locations are withheld.
+An ID without a hospital scope can support a match when the full normalised
+name and both encounter dates also agree. Conflicting evidence and ambiguous
+matches stay separate.
 
 The pipeline runs locally without network calls. It keeps raw working data in
 memory and omits direct identifiers and the key from its reports. Protect the
@@ -66,6 +69,8 @@ carry re-identification risk. The built-in FHIR validator checks resource and
 reference structure. Full profile validation requires an additional validator.
 See [the privacy design notes](docs/privacy-design.md)
 for policy references and limitations.
+The [two-page project brief](docs/brief.pdf) includes the practice results
+and the privacy and clinical preservation trade-offs.
 
 ## Development
 
