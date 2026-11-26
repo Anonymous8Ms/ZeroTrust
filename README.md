@@ -1,82 +1,76 @@
-# Secret Wards
+# ZeroTrust
 
-Secret Wards is an offline privacy pipeline for the Yugaantar DevForge
-synthetic hospital-record challenge. This branch contains the Person 3
-foundation and a fixture-only backend. The backend recognises the checked-in
-fixture layouts and quarantines other files. The team adapters, multilingual
-detector and linker are integration dependencies.
+ZeroTrust is an offline Python command-line tool for preparing synthetic
+healthcare records for research. It replaces direct identifiers, links records
+that belong to the same patient, and reduces the detail in dates, ages and
+locations while preserving clinical values such as diagnoses, doses and vital
+signs.
 
-## Run the first handoff
+The current build is a prototype. Its CLI processes the bundled synthetic CSV and
+text fixtures and quarantines inputs outside those layouts. Use synthetic data only.
 
-Use Python 3.11 or newer on Linux or macOS. The foundation has no third-party
-runtime dependencies. Start with an empty or nonexistent output directory.
+## Quick start
+
+Use Python 3.11 or later on Linux or macOS. The current build uses the Python
+standard library. From the repository root, run:
 
 ```sh
-python3 -m pip install -r requirements.txt
-RAKSHA_SECRET=synthetic-demo-secret-a python3 main.py \
-  --input tests/fixtures/input --output my_output
+RAKSHA_SECRET=local-demo-key python3 main.py \
+  --input tests/fixtures/input \
+  --output my_output
+```
+
+Use an empty or nonexistent output directory for each run. The key above is an
+example for the bundled fixtures. Supply your own secret through the
+`RAKSHA_SECRET` environment variable for other runs and keep it out of source
+control.
+
+## Output
+
+| Path | Contents |
+| --- | --- |
+| `sanitized/` | Records that were successfully processed. |
+| `report.json` | Input SHA-256 digests, processing outcomes, quarantine counts, elapsed time and peak memory. |
+| `records.jsonl` | One entry per exported record with its output path, location and patient pseudonym. Unresolved identities have `patient: null`. |
+
+Source files remain unchanged. Files that cannot be safely processed are
+accounted for in the report and excluded from the export.
+
+## Processing model
+
+1. **Inspect and link.** Inventory inputs, parse records, identify sensitive
+   fields and group records with sufficient evidence of a shared identity.
+2. **Apply policy and export.** Generate keyed pseudonyms and date offsets,
+   apply age and location rules, and write the export and audit reports.
+
+[The privacy policy](config/policy.yaml) defines the age-band width, date-shift
+range and location mappings. Linked records receive a consistent date offset
+per patient. Unlinked records receive an offset scoped to the encounter so
+admission and discharge intervals remain intact. Unmapped locations are withheld.
+
+The pipeline runs locally without network calls. It keeps raw working data in
+memory and omits direct identifiers and the key from its reports. Protect the
+input directory and host storage separately. Pseudonymised records can still
+carry re-identification risk. See [the privacy design notes](docs/privacy-design.md)
+for policy references and limitations.
+
+## Development
+
+- `main.py` is the command-line entry point.
+- `secret_wards/contracts.py` defines the interfaces for parsing, detection,
+  linkage and export.
+- `secret_wards/pipeline.py` coordinates processing.
+- `secret_wards/privacy.py` and `secret_wards/reporting.py` implement privacy
+  transformations and output reports.
+- `tests/` contains the synthetic fixtures and CLI checks.
+
+Run the tests with:
+
+```sh
 python3 -m unittest discover -s tests -v
 ```
 
-The example key is for the synthetic fixture. The judge provides the runtime
-key through the environment. Outputs are written to `sanitized/`,
-`report.json` and `records.jsonl`. Use fresh output directories for repeats.
-
-## Architecture
-
-1. Inventory, hash and parse inputs. Detect sensitive targets and preserve
-   clinical targets. Resolve patient groups across accepted records.
-2. Build rewrite plans from group assignments and the privacy policy. Render
-   and validate files through the adapter. Record safe paths and locations
-   in the reports and account for each quarantined input by hash.
-
-`secret_wards/contracts.py` defines the handoffs. Person 1 supplies an
-`Adapter`, Person 2 supplies a `Detector` and `Linker`, and Person 3 wires
-them into `run_pipeline` in `main.py`. Adapters return rendered UTF-8 bytes
-and final safe paths and locations. They own format validation and must use
-the final record location after any key rename. The `Target` type supports
-structured paths, spans into original text, and key, filename and metadata
-surfaces. A detector must mark where a resolved patient pseudonym can appear.
-
-## Privacy defaults
-
-- Resolved patients share an HMAC pseudonym and a consistent, separately
-  derived offset for related dates. For an unresolved identity, use the
-  internal record key as the date scope, keep all dates in that encounter
-  aligned, and use `patient: null` in the index. Do not infer a timeline
-  across unresolved records. The current date policy accepts ISO dates.
-- Use ten-year age bands. Generalise locations through explicit mappings
-  and withhold unknown regions. Preserve diagnoses and exact encounter
-  durations. If sensitive and protected targets conflict, quarantine the
-  file. `config/policy.yaml` uses JSON-compatible YAML.
-- Raw inputs stay in the input directory. The pipeline holds raw working
-  data in memory and writes sanitised content only. At-rest encryption for
-  the organiser's input and host swap is a deployment responsibility.
-- Sanitised content, record mappings and report counts are deterministic.
-  Observed runtime and process peak RSS vary. A changed key changes HMAC
-  pseudonyms. Date offsets are bounded, so individual offset collisions
-  across keys are possible.
-
-## Verification and teammate handoffs
-
-The synthetic check covers removal of nine labelled identifier targets,
-preserved diagnoses and clinical values, three nine-day stays, no false
-merge in the fixture, one unresolved record and one quarantined file.
-The age-and-location uniqueness baseline drops from two of two registration
-rows to zero of two. That is a fixture metric, separate from the judge's
-re-identification evaluation. See [privacy design](docs/privacy-design.md)
-for the policy references and limits.
-
-- Person 1: provide adapter entry points, supported encoding/format cases,
-  safe export and quarantine evidence, FHIR reference handling and limits.
-- Person 2: provide detector/linker entry points, evidence from the
-  practice data, matching thresholds or abstention rules and limits.
-
-When the organiser's kit arrives, run:
-
-```sh
-python3 validate_output.py --input dev/input --output my_output/
-```
-
-Use an output generated from `dev/input` for that check. The organiser
-validator and practice dataset are currently unavailable in this checkout.
+The checks cover consistent pseudonyms, unresolved records, preserved clinical
+values and encounter durations, and quarantine of malformed input. Sanitised
+records and mappings are reproducible for the same input and key. Measured
+runtime and peak memory can vary between runs.
