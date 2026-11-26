@@ -16,7 +16,9 @@ from dataclasses import dataclass, field
 import re
 from typing import Iterable, Protocol, Union
 
-from .normalization import birth_date, date_order_hint, matching_text, phone_number
+from .normalization import (
+    JOIN_CONTROLS, birth_date, date_order_hint, matching_text, phone_number, strip_join_controls,
+)
 
 Path = tuple[Union[str, int], ...]
 
@@ -368,16 +370,34 @@ def _scan_text(
     known_names: tuple[tuple[str, str], ...],
 ) -> tuple[list[tuple[Target, str]], list[Target]]:
     text = surface.text
+    offsets = None
+    if any(control in text for control in JOIN_CONTROLS):
+        # Match on visible characters and map spans back to the unchanged source.
+        offsets = []
+        previous = -1
+        for index, char in enumerate(text):
+            if char in JOIN_CONTROLS:
+                continue
+            # Attach controls next to whitespace to the following token.
+            offsets.append(previous + 1 if previous < 0 or text[previous].isspace() else index)
+            previous = index
+        offsets.append(len(text))
+        text = strip_join_controls(text)
     sensitive: list[tuple[Target, str]] = []
     protected: list[Target] = []
 
+    def original_target(kind: str, start: int, end: int) -> Target:
+        if offsets is not None:
+            start, end = offsets[start], offsets[end]
+        return Target(kind, surface.path, surface.channel, start, end)
+
     def protect(kind: str, start: int, end: int) -> None:
-        protected.append(Target(kind, surface.path, surface.channel, start, end))
+        protected.append(original_target(kind, start, end))
 
     def add(kind: str, start: int, end: int, role: str = "patient") -> None:
         start, end = _trim(text, start, end)
         if start != end and matching_text(text[start:end]) not in _UNKNOWN:
-            sensitive.append((Target(kind, surface.path, surface.channel, start, end), role))
+            sensitive.append((original_target(kind, start, end), role))
 
     def protect_doctor(start: int, end: int) -> None:
         specialty = _DOCTOR_SPECIALTY.match(text, end)
@@ -508,7 +528,7 @@ def _scan_text(
                 and not line[0][:address_parts[0].start()].strip()):
             add("ADDRESS", *line.span(), role)
     for kind, name in known_names:
-        words = re.findall(_WORD, name)
+        words = re.findall(_WORD, strip_join_controls(name))
         if len(words) < 2:
             continue
         pattern = _EDGE + r"[\s_-]+".join(re.escape(word) for word in words) + _END

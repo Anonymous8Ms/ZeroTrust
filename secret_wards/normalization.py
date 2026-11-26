@@ -7,6 +7,14 @@ import re
 import unicodedata
 
 
+JOIN_CONTROLS = frozenset("\u200c\u200d")
+_JOIN_CONTROL_TRANSLATION = dict.fromkeys(map(ord, JOIN_CONTROLS))
+
+
+def strip_join_controls(value: str) -> str:
+    return value.translate(_JOIN_CONTROL_TRANSLATION)
+
+
 def matching_text(value: str) -> str:
     value = unicodedata.normalize("NFKC", value)
     return "".join(
@@ -137,7 +145,7 @@ def _name_sound(token: str) -> str:
 
 
 def name_form(value: str) -> tuple[str, ...]:
-    tokens = re.findall(r"[a-z]+", _romanize(matching_text(value)))
+    tokens = re.findall(r"[a-z]+", _romanize(matching_text(strip_join_controls(value))))
     names = tuple(sorted(_name_sound(token) for token in tokens if token not in _TITLES))
     return names if 0 < len(names) <= 6 and any(len(token) > 1 for token in names) else ()
 
