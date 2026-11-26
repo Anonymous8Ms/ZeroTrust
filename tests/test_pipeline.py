@@ -50,6 +50,24 @@ def unique_records(records):
 
 
 class PipelineTest(unittest.TestCase):
+    def test_missing_or_blank_secret_is_rejected_before_export(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            for secret in (None, "", "   "):
+                with self.subTest(secret=secret):
+                    env = os.environ.copy()
+                    env.pop("RAKSHA_SECRET", None)
+                    if secret is not None:
+                        env["RAKSHA_SECRET"] = secret
+                    result = subprocess.run(
+                        [sys.executable, str(ROOT / "main.py"), "--input", str(INPUT),
+                         "--output", str(output)],
+                        env=env, capture_output=True, text=True,
+                    )
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn("Set RAKSHA_SECRET", result.stderr)
+                    self.assertFalse(output.exists())
+
     def test_synthetic_handoff(self):
         with TemporaryDirectory() as directory:
             first, repeat, rotated = (Path(directory) / run_name
