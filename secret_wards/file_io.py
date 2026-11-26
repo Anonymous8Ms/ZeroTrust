@@ -33,6 +33,60 @@ def safe_output_component(part):
             and part.split(".")[0].upper() not in _RESERVED_NAMES)
 
 
+# Fail-closed filename policy: a file keeps its name only when every word in the
+# stem is a known document/operations term. Anything else (for example a patient
+# name) is renamed, so a name the content detector would not recognise still
+# cannot survive in the output path, report.json or records.jsonl.
+_SAFE_STEM_WORDS = frozenset("""
+    a an and of the for to in on at by with ka ki ke
+    discharge discharges summary summaries note notes nursing nurse opd ipd visit visits
+    lab labs laboratory report reports rx prescription prescriptions billing bill bills
+    invoice invoices registration register registrations patients patient export exports
+    legacy bundle bundles fhir record records data dump dumps hospital hospitals clinic
+    health care centre center multispeciality multispecialty ward wards census log logs
+    ambulance helpdesk ticket tickets scanned scan scans consent form forms visitor
+    visitors drug drugs formulary reference ranges range protocol protocols management
+    readme file files misc clean bulk test tests result results attachment attachments
+    document documents doc docs pdf txt csv json tsv xml new old final copy backup part
+    page sheet batch daily weekly monthly emergency er icu ot radiology pathology
+    pharmacy department dept admission admissions encounter encounters observation
+    observations medication medications condition conditions procedure procedures
+    immunization immunizations allergy allergies vitals vital diagnosis diagnoses
+    followup follow up opdvisit inpatient outpatient dengue diabetes hypertension
+    january february march april may june july august september october november december
+    jan feb mar apr jun jul aug sep sept oct nov dec
+    hindi english hinglish ambiguous intake chat consult consultation broken upload uploads
+    malformed person people age ages sample demo example input output unknown mixed
+    no scope issuer different same other primary secondary
+    resources resource ordered north south east west central
+    claim claims whatsapp forward forwards forwarded index city lifeline pathkind
+    sanjeevani arogya jeevanjyoti dhh dhhardoi jjh snj
+""".split())
+
+
+def has_numeric_path_identifier(part):
+    # Keep short document sequence numbers and years, but hide numeric-only
+    # components and longer digit runs that can be patient identifiers.
+    digits = re.sub(r"[^0-9]", "", part)
+    return (bool(digits) and not any(char.isalpha() for char in part)) or len(digits) >= 5
+
+
+def safe_filename_stem(part):
+    stem = Path(part).stem
+    if not stem.isascii():
+        return False
+    stem = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", stem)  # split camelCase
+    for chunk in re.split(r"[^A-Za-z0-9]+", stem):
+        if not chunk or chunk.isdigit():
+            continue
+        if any(c.isdigit() for c in chunk) and re.fullmatch(r"[0-9a-fA-F]+", chunk):
+            continue  # hex-style ids such as bundle_581255ae
+        word = re.sub(r"\d+", "", chunk).lower()
+        if word and word not in _SAFE_STEM_WORDS and len(word) > 1:
+            return False
+    return True
+
+
 Edit = FieldEdit | FilenameEdit | HeaderEdit | KeyEdit | SpanEdit
 
 
@@ -173,7 +227,8 @@ class FileAdapters:
                         for location in locations:
                             get(outer_content, location[:-1])[location[-1]] = None
                     for location in locations:
-                        add(pointer(location), copy.deepcopy(get(content, location)), location)
+                        add(pointer(location) if location else "doc",
+                            copy.deepcopy(get(content, location)), location)
             return IngestedFile(
                 digest, None, tuple(records), file_format, suffix, content, record_paths,
                 outer_content
@@ -343,7 +398,7 @@ def _rewrite(document, plans, file_edits):
             if isinstance(rewritten, dict) and "resourceType" in rewritten:
                 raise Reject("format_changed")
             locations = {
-                key: final_pointer(path, renames)
+                key: final_pointer(path, renames) if path else "doc"
                 for key, path in document._record_paths.items()
             }
     return rewritten, filename, locations
