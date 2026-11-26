@@ -91,7 +91,8 @@ _LABELS = _rules({
     "TEHSIL": "tehsil|taluk|block|तहसील",
     "DISTRICT": "district|distt|dist|jila|location|जिला|ज़िला",
     "PIN": "pin|pincode|pin code|zip|postal code|पिन|पिन कोड",
-    "AADHAAR": "aadhaar|aadhar|adhaar|adhar|aadhar no|aadhar id|aadhaar no|aadhaar id|aadhaar number|uidai|आधार|आधार संख्या",
+    "AADHAAR": "aadhaar|aadhar|adhaar|adhar|aadhar no|aadhar id|aadhaar no|aadhaar id|aadhaar number|aadhaar card|aadhaar card no|aadhaar card number|aadhar card|aadhar card no|aadhar card number|uidai no|uidai number|uidai|आधार|आधार संख्या",
+    "AADHAAR_SUFFIX": "aadhaar last 4|aadhaar last four|aadhar last 4|last 4 of aadhaar|masked aadhaar suffix",
     "ABHA_NUMBER": "abha|abha id|abha no|abha number|health id|health id no|health id number|abdm id|ndhm id|आभा|आभा संख्या",
     "PAN": "pan|pan no|pan number|पैन|पैन नंबर",
     "MRN": "mrn|mrn no|mr no|mr number|medical record no|medical record number|medical record id|एमआरएन",
@@ -115,7 +116,7 @@ _SOURCE_PATHS = {"source path", "source file", "file name", "filename", "export 
 _ATTACHMENTS = {"attachment", "attachments", "document attachment"}
 _METADATA = {"metadata", "meta", "export metadata", "export meta"} | _SOURCE_PATHS | _ATTACHMENTS
 _UNKNOWN = {"none", "null", "unknown", "na", "n/a", "nil", "-", "--", "redacted", "अज्ञात"}
-_IDENTITY = {"PATIENT_NAME", "RELATIVE_NAME", "PHONE", "AADHAAR", "ABHA_NUMBER", "PAN", "UHID", "MRN", "DOB"}
+_IDENTITY = {"PATIENT_NAME", "RELATIVE_NAME", "PHONE", "AADHAAR", "AADHAAR_SUFFIX", "ABHA_NUMBER", "PAN", "UHID", "MRN", "DOB"}
 _NAME_PARTS = {"FIRST_NAME", "MIDDLE_NAME", "LAST_NAME"}
 _RELATIVES = {"FATHER_NAME": "father", "MOTHER_NAME": "mother", "SPOUSE_NAME": "spouse", "RELATIVE_NAME": "relative"}
 
@@ -789,7 +790,7 @@ def detect_record(
                 day_order = date_order_hint(path[-1])
                 if day_order is not None:
                     text = birth_date(text, day_order)
-            if isinstance(value, Decimal) and target_kind in _IDENTITY:
+            if isinstance(value, Decimal) and target_kind in _IDENTITY - {"AADHAAR", "ABHA_NUMBER"}:
                 # Bound the conversion before expanding a scientific-notation identifier.
                 text = (str(int(value)) if value.is_finite() and 0 <= value.adjusted() <= 31
                         and value == value.to_integral_value() else "")

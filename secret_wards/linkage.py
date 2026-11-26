@@ -5,12 +5,14 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from decimal import Decimal
 from hashlib import sha256
 from itertools import combinations
+import re
 from typing import Optional
 
 from .detection import DetectionResult
-from .normalization import birth_date, identifier, name_form, name_similarity, phone_number
+from .normalization import birth_date, identifier, matching_text, name_form, name_similarity, phone_number
 
 LinkageResult = dict[str, Optional[str]]
 _MAX_WEAK_BLOCK = 32
@@ -26,6 +28,7 @@ class _Profile:
     phones: frozenset[str]
     births: frozenset[str]
     national_ids: frozenset[tuple[str, str]]
+    aadhaar_suffixes: frozenset[str]
     local_ids: frozenset[tuple[tuple[str, str], str]]
     hospital: str
     record_ids: frozenset[tuple[str, str]]
@@ -33,10 +36,35 @@ class _Profile:
     named_uhid: tuple[str, ...] | None
 
 
+def _national_digits(value: str, width: int) -> str:
+    value = matching_text(value.strip())
+    if re.fullmatch(r"[0-9\s\-\u2010-\u2015]+", value):
+        digits = re.sub(r"[^0-9]", "", value)
+    elif len(value) <= 40 and re.fullmatch(r"[0-9]+(?:\.[0-9]+)?(?:e[+-]?[0-9]{1,3})?", value):
+        number = Decimal(value)
+        # Treat rounded scientific notation as incomplete evidence. All integer
+        # positions must have been supplied explicitly, with no implicit zeros.
+        if (number.adjusted() != width - 1 or number.as_tuple().exponent > 0
+                or number != number.to_integral_value()):
+            return ""
+        digits = str(int(number))
+    else:
+        return ""
+    return digits if len(digits) == width and len(set(digits)) > 1 else ""
+
+
+def _aadhaar_suffix(value: str, explicit: bool) -> str:
+    compact = re.sub(r"[\s\-\u2010-\u2015]", "", matching_text(value))
+    pattern = r"([0-9]{4})" if explicit else r"[x*•#]{8}([0-9]{4})"
+    match = re.fullmatch(pattern, compact)
+    return match.group(1) if match else ""
+
+
 def _profile(detection: DetectionResult) -> _Profile:
     names, relatives, phones, births, national_ids, local_ids = (set() for _ in range(6))
     record_ids = set()
     encounter_dates = {"ADMISSION_DATE": set(), "DISCHARGE_DATE": set()}
+    aadhaar_suffixes = set()
     hospital = identifier(detection.hospital) if detection.hospital else ""
     for item in detection.identity_evidence:
         if item.kind == "PATIENT_NAME" and item.role == "patient":
@@ -63,13 +91,18 @@ def _profile(detection: DetectionResult) -> _Profile:
             )
             if normalized:
                 encounter_dates[item.kind].add(normalized)
-        elif item.kind in {"AADHAAR", "ABHA_NUMBER", "PAN", "MRN", "UHID"}:
+        elif item.kind in {"AADHAAR", "ABHA_NUMBER", "AADHAAR_SUFFIX"} and item.role == "patient":
+            explicit_suffix = item.kind == "AADHAAR_SUFFIX"
+            if not explicit_suffix:
+                width = 12 if item.kind == "AADHAAR" else 14
+                if digits := _national_digits(item.value, width):
+                    national_ids.add((item.kind, digits))
+                    continue
+            if item.kind != "ABHA_NUMBER" and (tail := _aadhaar_suffix(item.value, explicit_suffix)):
+                aadhaar_suffixes.add(tail)
+        elif item.kind in {"PAN", "MRN", "UHID"}:
             normalized = identifier(item.value)
-            if item.kind in {"AADHAAR", "ABHA_NUMBER"}:
-                size = 12 if item.kind == "AADHAAR" else 14
-                if len(normalized) == size and normalized.isdecimal() and len(set(normalized)) > 1:
-                    national_ids.add((item.kind, normalized))
-            elif item.kind == "PAN":
+            if item.kind == "PAN":
                 if len(normalized) == 10 and normalized[:5].isalpha() and normalized[5:9].isdecimal() and normalized[9].isalpha():
                     national_ids.add((item.kind, normalized))
             elif len(normalized) >= 3 and any(char.isdecimal() for char in normalized):
@@ -89,7 +122,7 @@ def _profile(detection: DetectionResult) -> _Profile:
         named_uhid = (next(iter(uhids)), *next(iter(full_names)))
     return _Profile(
         frozenset(names), frozenset(relatives), frozenset(phones), frozenset(births),
-        frozenset(national_ids), frozenset(local_ids), hospital, frozenset(record_ids), encounter, named_uhid,
+        frozenset(national_ids), frozenset(aadhaar_suffixes), frozenset(local_ids), hospital, frozenset(record_ids), encounter, named_uhid,
     )
 
 
@@ -102,11 +135,25 @@ def _same_scope_conflict(
     )
 
 
+def _full_aadhaar_tails(profile: _Profile) -> set[str]:
+    return {value[-4:] for scheme, value in profile.national_ids if scheme == "AADHAAR"}
+
+
+def _masked_aadhaar_matches(left: _Profile, right: _Profile) -> bool:
+    return bool(left.aadhaar_suffixes & _full_aadhaar_tails(right)
+                or right.aadhaar_suffixes & _full_aadhaar_tails(left))
+
+
 def _conflict(left: _Profile, right: _Profile) -> bool:
     if left.births and right.births and left.births.isdisjoint(right.births):
         return True
     if _same_scope_conflict(left.national_ids, right.national_ids):
         return True
+    if left.aadhaar_suffixes or right.aadhaar_suffixes:
+        left_tails = left.aadhaar_suffixes | _full_aadhaar_tails(left)
+        right_tails = right.aadhaar_suffixes | _full_aadhaar_tails(right)
+        if left_tails and right_tails and left_tails.isdisjoint(right_tails):
+            return True
     if left.names and right.names and not any(
         name_similarity(a, b) for a in left.names for b in right.names
     ):
@@ -124,6 +171,9 @@ def _conflict(left: _Profile, right: _Profile) -> bool:
 def _inconsistent(profile: _Profile) -> bool:
     return (
         len(profile.births) > 1
+        or len(profile.aadhaar_suffixes) > 1
+        or bool(profile.aadhaar_suffixes and _full_aadhaar_tails(profile)
+                and profile.aadhaar_suffixes.isdisjoint(_full_aadhaar_tails(profile)))
         or len({scope for scope, _ in profile.national_ids}) < len(profile.national_ids)
         or any(
             len(a) > 1 and len(b) > 1 and not name_similarity(a, b)
@@ -189,16 +239,21 @@ def _score(
         return 90
 
     name = max((name_similarity(a, b) for a in left.names for b in right.names), default=0)
+    dob = bool(left.births & right.births)
+    phone = bool((left.phones & right.phones) - shared_phones)
+    local_conflict = _same_scope_conflict(left.local_ids, right.local_ids)
     if not name:
+        # A nameless record can join a named record when both independent
+        # attributes agree and the phone has no competing owner.
+        if bool(left.names) != bool(right.names) and dob and phone and not local_conflict:
+            return 75
         return 0
     relative = max((
         name_similarity(a, b)
         for left_role, a in left.relatives for right_role, b in right.relatives
         if left_role == right_role or "relative" in (left_role, right_role)
     ), default=0)
-    dob = bool(left.births & right.births)
-    phone = bool((left.phones & right.phones) - shared_phones)
-    if _same_scope_conflict(left.local_ids, right.local_ids) and not (dob and relative >= 2):
+    if local_conflict and not (dob and relative >= 2):
         return 0
     if (
         allow_encounter and name == 3 and (not left.hospital or not right.hospital)
@@ -209,6 +264,8 @@ def _score(
         return 61
     if allow_named_uhid and left.named_uhid and left.named_uhid == right.named_uhid:
         return _ANCHOR_MIN_SCORE
+    if dob and not local_conflict and _masked_aadhaar_matches(left, right):
+        return 74 + name
     if dob and (name >= 2 or relative or phone):
         return 70 + 4 * bool(relative) + 4 * phone + name
     if name >= 2 and phone and relative:

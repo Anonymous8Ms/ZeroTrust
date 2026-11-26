@@ -16,7 +16,7 @@ from .contracts import (
 )
 from .detection import DATE_KINDS, DetectionResult, TextSurface, detect_record
 from .file_io import (
-    FileAdapters, IngestedFile, discover, has_numeric_path_identifier, safe_filename_stem, safe_output_component,
+    FileAdapters, IngestedFile, discover, has_numeric_path_identifier, safe_document_stem, safe_output_component,
 )
 from .linkage import link_records
 from .normalization import birth_date, date_order_hint
@@ -282,7 +282,7 @@ def safe_path(item, relative, secret):
     for index, part in enumerate(parts):
         stem = Path(part).stem if index == len(parts) - 1 else part
         if (index in sensitive or not safe_output_component(part) or has_numeric_path_identifier(stem)
-                or (index == len(parts) - 1 and not safe_filename_stem(part))):
+                or not safe_document_stem(stem)):
             part = "file-" + opaque(secret, "export-path", "/".join(parts[:index + 1]))
             if index == len(parts) - 1:
                 part += relative.suffix.lower()
