@@ -95,6 +95,26 @@ def record_roots(content, paths, limit):
             if len(content) > limit:
                 raise Reject("record_limit")
             return [(index,) for index in range(len(content))]
+        if isinstance(content, dict):
+            arrays = []
+            pending = [((), content)]
+            while pending:
+                prefix, node = pending.pop()
+                for key, value in node.items():
+                    path = (*prefix, key)
+                    if isinstance(value, dict):
+                        pending.append((path, value))
+                    elif (key.casefold() in {"records", "visits", "patients", "encounters"}
+                          and isinstance(value, list) and value
+                          and all(isinstance(record, dict) for record in value)):
+                        arrays.append((path, len(value)))
+            if len(arrays) > 1:
+                raise Reject("ambiguous_record_collections")
+            if arrays:
+                path, length = arrays[0]
+                if length > limit:
+                    raise Reject("record_limit")
+                return [(*path, index) for index in range(length)]
         return [()]
     selected = set()
     result = []

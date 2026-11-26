@@ -6,6 +6,8 @@ import hmac
 import json
 from pathlib import Path
 
+from .normalization import birth_date, matching_text
+
 from .contracts import DetectionResult, Edit, Quarantine, RewritePlan, Target
 
 
@@ -47,7 +49,8 @@ def overlaps(left: Target, right: Target) -> bool:
 
 
 def build_plan(
-    detection: DetectionResult, group: str | None, secret: bytes, policy: Policy
+    detection: DetectionResult, group: str | None, secret: bytes, policy: Policy,
+    *, day_first: bool | None = None,
 ) -> RewritePlan:
     patient = pseudonym(secret, group) if group is not None else None
     scope = f"group:{group}" if group is not None else f"record:{detection.record_key}"
@@ -68,12 +71,12 @@ def build_plan(
             value = patient
         elif target.kind == "date":
             try:
-                value = (date.fromisoformat(target.value) + shift).isoformat()
+                value = (date.fromisoformat(birth_date(target.value, day_first)) + shift).isoformat()
             except (ValueError, OverflowError):
                 raise Quarantine("unsupported encounter date") from None
         elif target.kind == "age":
             try:
-                age = int(target.value)
+                age = int(matching_text(target.value))
                 if not 0 <= age <= 130:
                     raise ValueError
             except ValueError:

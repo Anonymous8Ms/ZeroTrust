@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -14,12 +15,12 @@ ROOT = Path(__file__).resolve().parents[1]
 INPUT = ROOT / "tests" / "fixtures" / "input"
 
 
-def run(output, key):
+def run(output, key, input_root=INPUT, *, check=True):
     return subprocess.run(
-        [sys.executable, str(ROOT / "main.py"), "--input", str(INPUT),
+        [sys.executable, str(ROOT / "main.py"), "--input", str(input_root),
          "--output", str(output)],
         env={**os.environ, "RAKSHA_SECRET": key},
-        check=True, capture_output=True, text=True,
+        check=check, capture_output=True, text=True,
     )
 
 
@@ -100,7 +101,7 @@ class PipelineTest(unittest.TestCase):
 
             observable = b"\n".join((*files.values(), json.dumps(audit).encode(),
                                      execution.stdout.encode(), execution.stderr.encode()))
-            for marker in ("Asha Demo", "आशा डेमो", "00000 00101", "00000 00102",
+            for marker in ("Asha Demo", "आशा डेमो", "70000 00101", "70000 00102",
                            "FIX-A", "FIX-B", "Example Village East", "Example Village West",
                            "synthetic-demo-secret-a"):
                 self.assertNotIn(marker.encode(), observable)
@@ -108,6 +109,100 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(unique_records(registration), 0)
             self.assertGreater(audit["timing"]["seconds"], 0)
             self.assertGreater(audit["resources"]["peak_rss_mb"], 0)
+
+
+    def test_renamed_inputs_and_mixed_formats(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "inputs"
+            source.mkdir()
+            nested = source / "batch"
+            nested.mkdir()
+            shutil.copyfile(INPUT / "registration.csv", nested / "intake.csv")
+            shutil.copyfile(INPUT / "hindi.txt", source / "ward-note.txt")
+            shutil.copyfile(INPUT / "malformed.csv", source / "broken-upload.csv")
+
+            output = root / "renamed-output"
+            run(output, "synthetic-mixed-key", source)
+            self.assertEqual(report(output)["counts"]["files_sanitized"], 2)
+            self.assertEqual(report(output)["counts"]["files_quarantined"], 1)
+            intake = rows(output / "sanitized" / "batch" / "intake.csv")
+            note = (output / "sanitized" / "ward-note.txt").read_text(encoding="utf-8")
+            self.assertIn(intake[0]["patient_name"], note)
+            self.assertNotEqual(intake[0]["patient_name"], intake[1]["patient_name"])
+            self.assertIn("BP 150/90; Dolo 650 BD", note)
+            self.assertFalse((output / "sanitized" / "broken-upload.csv").exists())
+
+            (source / "encounters.tsv").write_text(
+                "patient_name\tphone\tdiagnosis\nAsha Demo\t7000000101\tdengue\n",
+                encoding="utf-8",
+            )
+            nested_json = {"data": {"visits": [
+                {"patient_name": "Asha Demo", "phone": "7000000101", "diagnosis": "dengue"},
+                {"patient_name": "Asha Demo", "phone": "7000000102", "diagnosis": "malaria"},
+            ]}, "metadata": {"phone": "7000000101"}}
+            (source / "visits.json").write_text(json.dumps(nested_json), encoding="utf-8")
+            fhir = {"resourceType": "Bundle", "type": "collection", "entry": [
+                {"fullUrl": "https://example.invalid/Patient/source-patient",
+                 "resource": {"resourceType": "Patient", "id": "source-patient",
+                              "name": [{"text": "Asha Demo"}],
+                              "telecom": [{"system": "phone", "value": "7000000101"}]}},
+                {"fullUrl": "https://example.invalid/Observation/observation",
+                 "resource": {"resourceType": "Observation", "id": "observation",
+                              "status": "final", "code": {"text": "Glucose"},
+                              "subject": {"reference": "Patient/source-patient"},
+                              "valueQuantity": {"value": 105, "unit": "mg/dL"}}},
+            ]}
+            (source / "resources.fhir").write_text(json.dumps(fhir), encoding="utf-8")
+
+            output = root / "mixed-output"
+            run(output, "synthetic-mixed-key", source)
+            repeated = root / "mixed-repeat"
+            run(repeated, "synthetic-mixed-key", source)
+            self.assertEqual(stable_output(output), stable_output(repeated))
+            audit = report(output)
+            self.assertEqual(audit["counts"]["files_sanitized"], 5, audit)
+            self.assertEqual(audit["counts"]["files_quarantined"], 1)
+            self.assertEqual(audit["counts"]["records_processed"], 7)
+            bad_sha = hashlib.sha256((source / "broken-upload.csv").read_bytes()).hexdigest()
+            self.assertEqual(next(item["output"] for item in audit["files"]
+                                  if item["input_sha256"] == bad_sha), None)
+
+            records = [json.loads(line) for line in (output / "records.jsonl").read_text().splitlines()]
+            by_location = {(r["file"], r["loc"]): r["patient"] for r in records}
+            patient = by_location[("sanitized/batch/intake.csv", "row:0")]
+            self.assertTrue(patient.startswith("PSN-"))
+            for file, loc in (("ward-note.txt", "doc"), ("encounters.tsv", "row:0"),
+                              ("visits.json", "/data/visits/0"), ("resources.fhir", "doc")):
+                self.assertEqual(by_location[(f"sanitized/{file}", loc)], patient)
+                self.assertIn(patient, (output / "sanitized" / file).read_text())
+
+            other = by_location[("sanitized/batch/intake.csv", "row:1")]
+            self.assertNotEqual(other, patient)
+            self.assertEqual(by_location[("sanitized/visits.json", "/data/visits/1")], other)
+            exported = json.loads((output / "sanitized" / "visits.json").read_text())
+            self.assertEqual(exported["data"]["visits"][1]["diagnosis"], "malaria")
+            self.assertEqual(exported["metadata"]["phone"], "[REDACTED]")
+            exported_fhir = json.loads((output / "sanitized/resources.fhir").read_text())
+            fhir_patient, observation = [item["resource"] for item in exported_fhir["entry"]]
+            self.assertEqual(observation["subject"]["reference"], "Patient/" + fhir_patient["id"])
+            self.assertEqual(observation["valueQuantity"], {"value": 105, "unit": "mg/dL"})
+            public_files, _ = stable_output(output)
+            payload = b"\n".join(public_files.values())
+            for marker in (b"Asha Demo", b"7000000101", b"7000000102", b"source-patient"):
+                self.assertNotIn(marker, payload)
+
+    def test_all_quarantined_is_a_failed_cli_run(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "inputs"
+            source.mkdir()
+            (source / "unsupported.bin").write_bytes(b"synthetic data")
+            output = root / "output"
+            result = run(output, "synthetic-test", source, check=False)
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(report(output)["counts"]["files_quarantined"], 1)
+            self.assertEqual(list((output / "sanitized").iterdir()), [])
 
 
 if __name__ == "__main__":
