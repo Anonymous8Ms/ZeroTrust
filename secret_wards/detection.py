@@ -10,14 +10,17 @@ from __future__ import annotations
 from array import array
 from base64 import b64decode
 from binascii import Error as InvalidBase64
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 import re
 from typing import Iterable, Protocol, Union
 
-from .normalization import birth_date, date_order_hint, matching_text, phone_number
+from .normalization import (
+    birth_date, date_order_hint, format_control_scan_view, matching_text, phone_number,
+    strip_format_controls,
+)
 
 Path = tuple[Union[str, int], ...]
 
@@ -394,17 +397,29 @@ def _scan_text(
     role: str,
     known_names: tuple[tuple[str, str], ...],
 ) -> tuple[list[tuple[Target, str]], list[Target]]:
-    text = surface.text
+    text, removed = format_control_scan_view(surface.text)
     sensitive: list[tuple[Target, str]] = []
     protected: list[Target] = []
 
+    def original_position(position: int) -> int:
+        # Controls following whitespace belong to the next token; other controls
+        # at a span boundary belong to the preceding character.
+        if position and not text[position - 1].isspace():
+            return position + bisect_right(removed, position)
+        return position + bisect_left(removed, position)
+
+    def original_target(kind: str, start: int, end: int) -> Target:
+        if removed:
+            start, end = original_position(start), original_position(end)
+        return Target(kind, surface.path, surface.channel, start, end)
+
     def protect(kind: str, start: int, end: int) -> None:
-        protected.append(Target(kind, surface.path, surface.channel, start, end))
+        protected.append(original_target(kind, start, end))
 
     def add(kind: str, start: int, end: int, role: str = "patient") -> None:
         start, end = _trim(text, start, end)
         if start != end and matching_text(text[start:end]) not in _UNKNOWN:
-            sensitive.append((Target(kind, surface.path, surface.channel, start, end), role))
+            sensitive.append((original_target(kind, start, end), role))
 
     def protect_doctor(start: int, end: int) -> None:
         specialty = _DOCTOR_SPECIALTY.match(text, end)
@@ -540,7 +555,7 @@ def _scan_text(
                 and not line[0][:address_parts[0].start()].strip()):
             add("ADDRESS", *line.span(), role)
     for kind, name in known_names:
-        words = re.findall(_WORD, name)
+        words = re.findall(_WORD, strip_format_controls(name))
         if len(words) < 2:
             continue
         pattern = _EDGE + r"[\s_-]+".join(re.escape(word) for word in words) + _END

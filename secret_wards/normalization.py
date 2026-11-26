@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from array import array
 from datetime import date
 import re
 import unicodedata
@@ -10,8 +11,23 @@ import unicodedata
 _FORMAT_CONTROLS = re.compile(r"[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]")
 
 
+def strip_format_controls(value: str) -> str:
+    return _FORMAT_CONTROLS.sub("", value)
+
+
+def format_control_scan_view(value: str):
+    """Return searchable text and the positions of omitted controls in that view."""
+    if value.isascii():
+        return value, ()
+    removed = array("I", (
+        match.start() - offset
+        for offset, match in enumerate(_FORMAT_CONTROLS.finditer(value))
+    ))
+    return (strip_format_controls(value), removed) if removed else (value, ())
+
+
 def matching_text(value: str) -> str:
-    value = _FORMAT_CONTROLS.sub("", unicodedata.normalize("NFKC", value))
+    value = strip_format_controls(unicodedata.normalize("NFKC", value))
     return "".join(
         str(unicodedata.decimal(char)) if char.isdecimal() else char
         for char in value
