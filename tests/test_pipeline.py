@@ -1,5 +1,6 @@
 """Exercise the organiser's real CLI on team-generated synthetic records."""
 import base64
+from codecs import BOM_UTF8
 import csv
 from datetime import date
 import hashlib
@@ -313,6 +314,114 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(observation["subject"]["reference"], clean_fhir["entry"][0]["fullUrl"])
             self.assertEqual(observation["valueQuantity"], {"value": 105, "unit": "mg/dL"})
             self.assertIn("40-49 yrs", observation["text"]["div"])
+
+    def test_legacy_table_encoding_and_negative_age_are_exported(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "inputs"
+            source.mkdir()
+            windows = "City,Diagnosis,Notes\nSynthetic Village,dengue,BP 120/80 – temp 37 °C\n"
+            legacy = windows.encode("cp1252")
+            (source / "legacy.csv").write_bytes(legacy)
+            (source / "wrong-bom.csv").write_bytes(BOM_UTF8 + legacy)
+            (source / "undecodable.txt").write_bytes(b"Temp 37 \xb0C")
+            (source / "ages.tsv").write_bytes(
+                "Umar\tDiagnosis\n-२ वर्ष\tmalaria\n४२ वर्ष\tdengue\n".encode("utf-16"),
+            )
+
+            output = root / "output"
+            run(output, "synthetic-coverage-key", source)
+            audit = report(output)
+            self.assertEqual(audit["counts"]["files_sanitized"], 2)
+            self.assertEqual(audit["counts"]["records_processed"], 3)
+            self.assertEqual({entry["reason"] for entry in audit["files"] if entry["output"] is None},
+                             {"invalid_encoding"})
+            self.assertEqual(audit["counts"]["files_quarantined"], 2)
+            table = rows(output / "sanitized/legacy.csv")
+            self.assertEqual(table, [{"City": "[REGION WITHHELD]", "Diagnosis": "dengue",
+                                      "Notes": "BP 120/80 – temp 37 °C"}])
+
+            with (output / "sanitized/ages.tsv").open(encoding="utf-8", newline="") as stream:
+                exported = list(csv.DictReader(stream, delimiter="\t"))
+            self.assertEqual(exported, [
+                {"Umar": "[AGE WITHHELD] वर्ष", "Diagnosis": "malaria"},
+                {"Umar": "40-49 वर्ष", "Diagnosis": "dengue"},
+            ])
+
+    def test_preserves_safe_names_and_numeric_types_while_redacting(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "inputs"
+            source.mkdir()
+            (source / "Ward Notes (Copy).txt").write_text(
+                "Patient Name: Zoë Garnet\nClinical: BP 120/80\n", encoding="utf-8",
+            )
+            (source / "person.json").write_text(
+                '{"aadhaar":274512349092,"diagnosis":"dengue"}', encoding="utf-8",
+            )
+            output = root / "out"
+            run(output, "synthetic-edge-key", source)
+            note = (output / "sanitized/Ward Notes (Copy).txt").read_text()
+            self.assertEqual(note, "Patient Name: [REDACTED]\nClinical: BP 120/80\n")
+            person = json.loads((output / "sanitized/person.json").read_text())
+            self.assertEqual(person, {"aadhaar": 0, "diagnosis": "dengue"})
+            audit = report(output)
+            self.assertEqual(audit["schema"], "raksha-report/1")
+            self.assertEqual(audit["entities"], {"AADHAAR": 1, "PATIENT_NAME": 1})
+
+    def test_quarantines_empty_reversed_and_dangling_records(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "inputs"
+            source.mkdir()
+            inputs = {
+                "empty.txt": ("", "empty_input"),
+                "reversed.csv": ("Admitted,Discharged\n2026-06-12,2026-06-03\n", "privacy_rewrite_failed"),
+                "dangling.fhir": (json.dumps({"resourceType": "Bundle", "type": "collection", "entry": [
+                    {"fullUrl": "https://example.invalid/Observation/obs-1",
+                     "resource": {"resourceType": "Observation", "id": "obs-1",
+                                  "subject": {"reference": "Patient/missing"}}}
+                ]}), "invalid_fhir"),
+            }
+            for name, (contents, _) in inputs.items():
+                (source / name).write_text(contents, encoding="utf-8")
+            output = root / "out"
+            self.assertEqual(run(output, "synthetic-edge-key", source, check=False).returncode, 1)
+            expected = {hashlib.sha256((source / name).read_bytes()).hexdigest(): reason
+                        for name, (_, reason) in inputs.items()}
+            files = report(output)["files"]
+            self.assertEqual({entry["input_sha256"]: entry["reason"] for entry in files}, expected)
+            self.assertTrue(all(entry["output"] is None for entry in files))
+
+    def test_shifts_lab_dates_and_uses_date_order_from_other_notes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "inputs"
+            source.mkdir()
+            (source / "known.txt").write_text(
+                "Sample Hospital\nDate of Admission: 02/17/2026\nDate of Discharge: 02/20/2026\n",
+                encoding="utf-8",
+            )
+            (source / "ambiguous.txt").write_text(
+                "Sample Hospital\nDate of Admission: 02/01/2026\nDate of Discharge: 02/06/2026\n",
+                encoding="utf-8",
+            )
+            (source / "lab.csv").write_text("collected_on,reported_on\n2026-03-01,2026-03-02\n")
+            (source / "chat.txt").write_text("[02/04/26, 8:20 pm] Synthetic Sender: BP 120/80\n")
+            output = root / "out"
+            run(output, "synthetic-date-key", source)
+            directory = output / "sanitized"
+            note = (directory / "ambiguous.txt").read_text().splitlines()
+            a, b = (date.fromisoformat(line.split(": ", 1)[1]) for line in note[1:])
+            self.assertEqual((b - a).days, 5)
+            lab = rows(directory / "lab.csv")[0]
+            self.assertNotEqual(lab["collected_on"], "2026-03-01")
+            self.assertEqual((date.fromisoformat(lab["reported_on"]) -
+                              date.fromisoformat(lab["collected_on"])).days, 1)
+            chat = (directory / "chat.txt").read_text()
+            self.assertNotIn("02/04/26", chat)
+            self.assertIn("8:20 pm", chat)
+            self.assertIn("BP 120/80", chat)
 
     def test_all_quarantined_is_a_failed_cli_run(self):
         with TemporaryDirectory() as directory:

@@ -231,7 +231,7 @@ class ReferenceIndex:
         if version:
             candidates = [path for path in candidates if self.resources[path].version == version]
         _require(len(candidates) <= 1)
-        if self.bundle and value.startswith(("urn:uuid:", "urn:oid:")):
+        if self.bundle and (value.startswith(("urn:uuid:", "urn:oid:")) or (rest and not rest[1])):
             _require(candidates)
         return candidates[0] if candidates else None
 

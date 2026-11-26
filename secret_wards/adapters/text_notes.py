@@ -22,10 +22,17 @@ def check_text(text):
     return text
 
 
-def decode_text(raw, encoding):
+def decode_text(raw, encoding, *, allow_cp1252=False):
     try:
         if encoding is None:
-            encoding = next((name for bom, name in _BOMS if raw.startswith(bom)), "utf-8")
+            encoding = next((name for bom, name in _BOMS if raw.startswith(bom)), None)
+            if encoding is None:
+                try:
+                    return check_text(raw.decode("utf-8"))
+                except UnicodeDecodeError:
+                    if not allow_cp1252:
+                        raise
+                    encoding = "cp1252"
         encoding = codecs.lookup(encoding).name
         if encoding not in _ENCODINGS:
             raise Reject("unsupported_encoding")

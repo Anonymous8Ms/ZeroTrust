@@ -71,9 +71,10 @@ address the same JSON member in one export.
   The reader also recognises one nested `records`, `visits`, `patients` or
   `encounters` array. An API caller can pass `json_record_paths` for other
   nonoverlapping record paths. Export reports pointers after key renames.
-- The default decoder accepts strict UTF-8 and BOM-marked UTF-8, UTF-16 or
-  UTF-32. Callers may specify an encoding for known legacy sources, including
-  Windows-1252 and Latin-1. Output uses UTF-8. Default limits are 32 MiB per
+- The decoder accepts strict UTF-8 and BOM-marked UTF-8, UTF-16 or UTF-32.
+  CSV and TSV without a BOM fall back to Windows-1252 if UTF-8 decoding fails.
+  Callers may specify an encoding for known legacy sources. Output uses UTF-8.
+  Default limits are 32 MiB per
   input and 100,000 records. Tables also limit extra blank lines and column
   count. Readable failures still receive the SHA-256 of their original bytes.
 - FHIR accepts R4 JSON resources and bundles in `.fhir` or `.json`. The

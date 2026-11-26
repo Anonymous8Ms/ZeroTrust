@@ -11,11 +11,12 @@ def peak_memory_mb() -> float:
     return round(rss / divisor, 3)
 
 
-def write_reports(output: Path, files: list, counts: dict, records: list, seconds: float):
+def write_reports(output: Path, files: list, counts: dict, records: list, seconds: float, *, entities=None):
     with (output / "records.jsonl").open("w", encoding="utf-8") as stream:
         for record in records:
             print(json.dumps(record, ensure_ascii=False, sort_keys=True), file=stream)
     report = {
+        "schema": "raksha-report/1", "entities": entities if entities is not None else {},
         "files": files, "counts": counts, "timing": {"seconds": round(seconds, 6)},
         "resources": {"peak_rss_mb": peak_memory_mb()},
     }

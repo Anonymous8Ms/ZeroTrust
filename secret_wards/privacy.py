@@ -83,12 +83,16 @@ def build_plan(
         elif target.kind == "age":
             try:
                 age = int(matching_text(target.value))
-                if not 0 <= age <= 130:
+                if age > 130:
                     raise ValueError
             except ValueError:
                 raise Quarantine("invalid age") from None
-            lower = age // policy.age_band_width * policy.age_band_width
-            value = f"{lower}-{lower + policy.age_band_width - 1}"
+            if age < 0:
+                # Suppress the invalid age without dropping the rest of the record.
+                value = "[AGE WITHHELD]"
+            else:
+                lower = age // policy.age_band_width * policy.age_band_width
+                value = f"{lower}-{lower + policy.age_band_width - 1}"
         elif target.kind == "location":
             value = policy.locations.get(target.value, "[REGION WITHHELD]")
         elif target.kind == "attachment":
