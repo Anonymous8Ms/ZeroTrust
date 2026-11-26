@@ -38,6 +38,10 @@ Source files remain unchanged. Files that cannot be safely processed are
 accounted for in the report and excluded from the export. For a nonempty input
 directory, the CLI returns a failure status if every file is quarantined.
 
+JSON and FHIR files with recognised embedded attachment payloads are
+quarantined with the reason `embedded_attachment`. The CLI does not decode or
+export those payloads.
+
 ## Processing model
 
 1. **Inspect and link.** Inventory inputs, parse records, identify sensitive

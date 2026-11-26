@@ -1,4 +1,5 @@
 """Exercise the organiser's real CLI on team-generated synthetic records."""
+import base64
 import csv
 from datetime import date
 import hashlib
@@ -49,6 +50,55 @@ def unique_records(records):
 
 
 class PipelineTest(unittest.TestCase):
+    def test_embedded_attachments_are_quarantined_before_export(self):
+        encoded = base64.b64encode(b"Patient: Synthetic Attachment").decode()
+        documents = {
+            "note.fhir": {
+                "resourceType": "DocumentReference", "status": "current",
+                "content": [{"attachment": {"contentType": "text/plain", "data": encoded}}],
+            },
+            "binary.json": {
+                "resourceType": "Binary", "contentType": "text/plain", "data": encoded,
+            },
+            "payload.json": {"records": [{"attachments": [{"data": encoded}]}]},
+            "encoded.json": {"metadata": {"content_base64": encoded}},
+            "wrapped.json": {"attachments": {"lab": {"blob": {"data": encoded}}}},
+            "inline.json": {"metadata": {"source_url": f"data:text/plain;base64,{encoded}"}},
+        }
+        clean = {
+            "contentType": "application/json",
+            "data": {"visits": [{"diagnosis": "asthma"}]},
+            "metadata": {"phone": "7000000301"},
+        }
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input"
+            output = root / "output"
+            source.mkdir()
+            for name, document in {**documents, "clean.json": clean}.items():
+                (source / name).write_text(json.dumps(document), encoding="utf-8")
+            result = run(output, "synthetic-attachment-key", source)
+            audit = report(output)
+            self.assertEqual(audit["counts"]["files_sanitized"], 1)
+            self.assertEqual(audit["counts"]["files_quarantined"], len(documents))
+            by_hash = {item["input_sha256"]: item for item in audit["files"]}
+            for name in documents:
+                digest = hashlib.sha256((source / name).read_bytes()).hexdigest()
+                self.assertEqual(by_hash[digest], {
+                    "input_sha256": digest, "output": None, "status": "quarantined",
+                    "reason": "embedded_attachment",
+                })
+            self.assertEqual([p.name for p in (output / "sanitized").iterdir()], ["clean.json"])
+            cleaned = json.loads((output / "sanitized" / "clean.json").read_text())
+            self.assertEqual(cleaned["data"], clean["data"])
+            self.assertEqual(cleaned["metadata"]["phone"], "[REDACTED]")
+            observable = result.stdout + result.stderr + "\n".join(
+                path.read_text() for path in output.rglob("*") if path.is_file()
+            )
+            self.assertNotIn(encoded, observable)
+            self.assertNotIn("Synthetic Attachment", observable)
+
     def test_synthetic_handoff(self):
         with TemporaryDirectory() as directory:
             first, repeat, rotated = (Path(directory) / run_name
