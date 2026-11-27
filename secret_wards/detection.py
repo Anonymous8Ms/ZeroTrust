@@ -88,6 +88,7 @@ _LABELS = _rules({
     "TEHSIL": "tehsil|taluk|block|तहसील",
     "DISTRICT": "district|distt|dist|jila|location|जिला|ज़िला",
     "PIN": "pin|pincode|pin code|zip|postal code|पिन|पिन कोड",
+    "AADHAAR_MASKED": "masked aadhaar|aadhaar masked|masked aadhar|aadhar masked|masked aadhaar number|aadhaar last 4|masked uidai|मास्क्ड आधार",
     "AADHAAR": "aadhaar|aadhar|adhaar|adhar|aadhar no|aadhar id|aadhaar no|aadhaar id|aadhaar number|uidai|आधार|आधार संख्या",
     "ABHA_NUMBER": "abha|abha id|abha no|abha number|health id|health id no|health id number|abdm id|ndhm id|आभा|आभा संख्या",
     "PAN": "pan|pan no|pan number|पैन|पैन नंबर",
@@ -112,8 +113,8 @@ _SOURCE_PATHS = {"source path", "source file", "file name", "filename", "export 
 _ATTACHMENTS = {"attachment", "attachments", "document attachment"}
 _METADATA = {"metadata", "meta", "export metadata", "export meta"} | _SOURCE_PATHS | _ATTACHMENTS
 _UNKNOWN = {"none", "null", "unknown", "na", "n/a", "nil", "-", "--", "redacted", "अज्ञात"}
-_IDENTITY = {"PATIENT_NAME", "RELATIVE_NAME", "PHONE", "AADHAAR", "ABHA_NUMBER", "PAN", "UHID", "MRN", "DOB"}
-_LINKAGE_EVIDENCE = _IDENTITY | ENCOUNTER_DATES | {"AGE", "DATE", "VILLAGE"}
+_IDENTITY = {"PATIENT_NAME", "RELATIVE_NAME", "PHONE", "AADHAAR", "AADHAAR_MASKED", "ABHA_NUMBER", "PAN", "UHID", "MRN", "DOB"}
+_LINKAGE_EVIDENCE = (_IDENTITY - {"AADHAAR_MASKED"}) | ENCOUNTER_DATES | {"AGE", "DATE", "VILLAGE"}
 _NAME_PARTS = {"FIRST_NAME", "MIDDLE_NAME", "LAST_NAME"}
 _RELATIVES = {"FATHER_NAME": "father", "MOTHER_NAME": "mother", "SPOUSE_NAME": "spouse", "RELATIVE_NAME": "relative"}
 
@@ -252,6 +253,9 @@ _PHONE = re.compile(
     rf"\(?[6-9६-९]\d{{3}}\)?{_PHONE_SEPARATOR}\d{{6}}|"
     rf"\(?[6-9६-९]\d{{2}}\)?{_PHONE_SEPARATOR}\d{{7}})" + _END
 )
+_MASKED_AADHAAR = re.compile(
+    _EDGE + r"[xXｘＸ*•●×]{4}[ \t\u00a0-]?[xXｘＸ*•●×]{4}[ \t\u00a0-]?\d{4}" + _END
+)
 _AADHAAR = re.compile(_EDGE + r"\d{4}([ -]?)\d{4}\1\d{4}" + _END)
 _ABHA = re.compile(_EDGE + r"\d{2}[ -]?\d{4}[ -]?\d{4}[ -]?\d{4}" + _END)
 _PAN = re.compile(_EDGE + r"[A-Z]{5}\d{4}[A-Z]" + _END, _RX)
@@ -263,7 +267,7 @@ _UUID = re.compile(
 _CODE = r"[A-Z0-9\u0966-\u096f][A-Z0-9\u0966-\u096f./_-]{1,31}(?![A-Z0-9\u0966-\u096f./_-])"
 _CODE_VALUE = re.compile(_CODE, _RX)
 _VALUE_PATTERNS = {
-    "PHONE": _PHONE, "RELATIVE_PHONE": _PHONE, "AADHAAR": _AADHAAR, "ABHA_NUMBER": _ABHA, "PAN": _PAN,
+    "PHONE": _PHONE, "RELATIVE_PHONE": _PHONE, "AADHAAR": _AADHAAR, "AADHAAR_MASKED": _MASKED_AADHAAR, "ABHA_NUMBER": _ABHA, "PAN": _PAN,
     "MRN": _CODE_VALUE, "UHID": _CODE_VALUE, "ENCOUNTER_ID": _CODE_VALUE,
     "INSURANCE_ID": _CODE_VALUE, "EMAIL": _EMAIL,
 }
@@ -527,7 +531,7 @@ def _scan_text(
             if sum(char.isalnum() for char in value) >= 4 and any(char.isdecimal() for char in value):
                 add_labelled_id(match)
     for pattern, kind in (
-        (_EMAIL, "EMAIL"), (_ABHA, "ABHA_NUMBER"), (_AADHAAR, "AADHAAR"),
+        (_EMAIL, "EMAIL"), (_ABHA, "ABHA_NUMBER"), (_AADHAAR, "AADHAAR"), (_MASKED_AADHAAR, "AADHAAR_MASKED"),
         (_PAN, "PAN"), (_PHONE, "PHONE"), (_BARE_ID, "MRN"),
     ):
         for match in pattern.finditer(text):
@@ -569,7 +573,7 @@ def _sensitive_metadata_payload(surface: TextSurface, names: tuple[tuple[str, st
 
 _PRIORITY = {
     kind: index for index, kind in enumerate((
-        "RELATIVE_NAME", "PATIENT_NAME", "ADDRESS", "ABHA_NUMBER", "AADHAAR",
+        "RELATIVE_NAME", "PATIENT_NAME", "ADDRESS", "ABHA_NUMBER", "AADHAAR_MASKED", "AADHAAR",
         "UHID", "INSURANCE_ID", "MRN", "PHONE",
     ))
 }
@@ -637,11 +641,16 @@ def detect_record(
     ) -> None:
         hits, clinical = _scan_text(surface, role, names)
         protected.extend(clinical)
+        # A FHIR link can contain patient information that needs redaction, but
+        # its literal address is not an assertion about the patient's identity.
+        collect_identity = surface.channel == "content" and not (
+            record.format == "fhir" and surface.path[-1:] in {("reference",), ("fullUrl",)}
+        )
         for target, hit_role in _select_spans(hits, clinical):
             sensitive.append(target)
-            if surface.channel == "content" and target.kind != "VILLAGE":
+            if collect_identity and target.kind != "VILLAGE":
                 collect(target.kind, surface.text[target.start:target.end], hit_role, surface.path)
-        if surface.channel == "content":
+        if collect_identity:
             # A labelled village can be inside a broader address rewrite.
             villages = [(target, hit_role) for target, hit_role in hits if target.kind == "VILLAGE"]
             if villages:
@@ -733,6 +742,10 @@ def detect_record(
         text = str(value).strip()
         if not text or matching_text(text) in _UNKNOWN:
             continue
+        # A generic Aadhaar field can hold a masked value. Keep it out of
+        # national-ID linkage evidence while still redacting the entire field.
+        if kind == "AADHAAR" and _MASKED_AADHAAR.fullmatch(text):
+            kind = "AADHAAR_MASKED"
         if label == "fhir resource id":
             sensitive.append(Target("UHID", path, channel))
             continue

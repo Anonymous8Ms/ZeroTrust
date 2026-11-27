@@ -111,6 +111,7 @@ class DetectionTests(unittest.TestCase):
         self.assertEqual(name_form("Fatima amma"), name_form("Fatima"))
         self.assertNotEqual(name_form("Amma Devi"), name_form("Devi"))
         self.assertEqual(name_form("Kavita Pandey"), name_form("कविता पांडे"))
+        self.assertEqual(name_form("Kavita Pandey"), name_form("Kavitha Pandeya"))
         self.assertNotEqual(name_form("Priya Sharma"), name_form("Pari Sharma"))
         self.assertEqual(phone_number("0091 (70000) 12345"), "7000012345")
         self.assertEqual(phone_number("०७००००१२०४५"), "7000012045")
