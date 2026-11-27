@@ -149,6 +149,78 @@ class PipelineTest(unittest.TestCase):
                 self.assertNotIn(word, everything)
             self.assertEqual(sum(name.startswith("file-") for name in exported), 3)
 
+    def test_structured_masked_aadhaar_preserves_identical_lab_value(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input"
+            source.mkdir()
+            (source / "intake.csv").write_text(
+                "masked aadhaar,diagnosis,lab value\nXXXX-XXXX-8225,asthma,8225\n", encoding="utf-8",
+            )
+            output = root / "repro"
+            run(output, "synthetic-aadhaar-repro", source)
+            self.assertEqual(rows(output / "sanitized/intake.csv"), [{
+                "masked aadhaar": "[REDACTED]", "diagnosis": "asthma", "lab value": "8225",
+            }])
+
+            labels = ("masked aadhaar", "aadhaar masked", "masked_aadhaar", "maskedAadhaar")
+            markers = ("XXXX-XXXX-8225", "xxxx xxxx 8225", "********8225", "••••-••••-8225")
+            fields = (*labels, "diagnosis", "lab value")
+            for fmt in ("csv", "tsv", "json"):
+                with self.subTest(format=fmt):
+                    inputs = root / fmt
+                    inputs.mkdir()
+                    filename = f"intake.{fmt}"
+                    path = inputs / filename
+                    if fmt == "json":
+                        path.write_text(json.dumps([
+                            dict.fromkeys(labels, marker) | {"diagnosis": "asthma", "lab value": 8225}
+                            for marker in markers
+                        ], ensure_ascii=False), encoding="utf-8")
+                    else:
+                        delimiter = "," if fmt == "csv" else "\t"
+                        with path.open("w", encoding="utf-8", newline="") as stream:
+                            writer = csv.writer(stream, delimiter=delimiter)
+                            writer.writerow(fields)
+                            writer.writerows(
+                                (*([marker] * len(labels)), "asthma", "8225") for marker in markers
+                            )
+                    output = root / f"output-{fmt}"
+                    run(output, "synthetic-aadhaar-repro", inputs)
+                    export = output / report(output)["files"][0]["output"]
+                    if fmt == "json":
+                        actual = json.loads(export.read_text(encoding="utf-8"))
+                    else:
+                        with export.open(encoding="utf-8", newline="") as stream:
+                            actual = list(csv.DictReader(stream, delimiter=delimiter))
+                    self.assertEqual(len(actual), len(markers))
+                    for marker, record in zip(markers, actual, strict=True):
+                        for label in labels:
+                            with self.subTest(label=label, marker=marker):
+                                self.assertEqual(record[label], "[REDACTED]")
+                        self.assertEqual(record["diagnosis"], "asthma")
+                        self.assertEqual(record["lab value"], 8225 if fmt == "json" else "8225")
+
+    def test_masked_aadhaar_is_removed_from_text_and_metadata(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input"
+            source.mkdir()
+            markers = ("XXXX XXXX 4827", "********6073", "••••-••••-7319", "XXXX-XXXX-9571")
+            (source / "note.txt").write_text(
+                f"Aadhaar: {markers[0]}\nIdentifier {markers[1]}\nBP 120/80\n", encoding="utf-8",
+            )
+            (source / "record.json").write_text(json.dumps({
+                "metadata": {"masked_aadhaar": markers[2]}, "note": f"Identifier {markers[3]}",
+            }, ensure_ascii=False), encoding="utf-8")
+            output = root / "output"
+            run(output, "synthetic-masked-key", source)
+            self.assertEqual(report(output)["counts"]["files_sanitized"], 2)
+            published = "\n".join(p.read_text() for p in output.rglob("*") if p.is_file())
+            for marker in markers:
+                self.assertNotIn(marker, published)
+            self.assertIn("BP 120/80", published)
+
     def test_numeric_mrn_is_removed_from_export_paths_and_indexes(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -636,6 +708,38 @@ class PipelineTest(unittest.TestCase):
             released = json.loads((output / "sanitized/ordered.fhir").read_text())
             self.assertTrue(released["period"]["start"].endswith("T16:10:00+05:30"))
             self.assertTrue(released["period"]["end"].endswith("T11:25:00Z"))
+
+    def test_fhir_organization_uuid_does_not_conflict_with_aadhaar(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input"
+            source.mkdir()
+            output = root / "output"
+            aadhaar = "008323498881"
+            org_url = "urn:uuid:1294a895-aba9-11cb-989b-000000000731"
+            (source / "intake.csv").write_text(
+                f"patient name,aadhaar\nSynthetic Person,{aadhaar}\n", encoding="utf-8",
+            )
+            bundle = {"resourceType": "Bundle", "type": "collection", "entry": [
+                {"fullUrl": "urn:uuid:1294a895-aba9-11cb-989b-a00000000731",
+                 "resource": {"resourceType": "Patient", "id": "synthetic-person",
+                              "name": [{"text": "Synthetic Person"}],
+                              "managingOrganization": {"reference": org_url},
+                              "identifier": [{"system": "https://example.invalid/aadhaar", "value": aadhaar}]}},
+                {"fullUrl": org_url, "resource": {"resourceType": "Organization", "name": "Synthetic Clinic"}},
+            ]}
+            (source / "resources.fhir").write_text(json.dumps(bundle), encoding="utf-8")
+
+            run(output, "synthetic-fhir-uuid-key", source)
+
+            published = [json.loads(line) for line in (output / "records.jsonl").read_text().splitlines()]
+            self.assertEqual(len(published), 2)
+            self.assertIsNotNone(published[0]["patient"])
+            self.assertEqual(published[0]["patient"], published[1]["patient"])
+            released = (output / "sanitized" / "resources.fhir").read_text()
+            entries = json.loads(released)["entry"]
+            self.assertEqual(entries[0]["resource"]["managingOrganization"]["reference"], entries[1]["fullUrl"])
+            self.assertNotIn(aadhaar, released)
 
     def test_explicit_facility_scope_links_mrns_across_exports(self):
         with TemporaryDirectory() as directory:

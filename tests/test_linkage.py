@@ -243,6 +243,23 @@ class LinkageTests(unittest.TestCase):
         self.assertNotEqual(linked["patient"], linked["homonym"])
         self.assertIsNone(linked["note"])
 
+    def test_masked_aadhaar_suffix_is_excluded_from_linkage(self):
+        first = detect("first", {"name": "Meera Kapoor", "aadhaar": "XXXX-XXXX-8225"})
+        second = detect("second", {"name": "Tara Pariksha", "maskedAadhaar": "********8225"})
+        full = detect("full", {"aadhaar": "234512348225"})
+        note = detect_record(ParsedRecord(
+            "note", "synthetic", "doc", "text", "Aadhaar: 2345 1234 8225",
+        ))
+        for item in (first, second):
+            self.assertIn("AADHAAR_MASKED", {target.kind for target in item.sensitive_targets})
+            self.assertEqual({e.kind for e in item.identity_evidence}, {"PATIENT_NAME"})
+        self.assertIn("AADHAAR", {target.kind for target in note.sensitive_targets})
+        linked = link_records([first, second, full, note])
+        self.assertIsNone(linked["first"])
+        self.assertIsNone(linked["second"])
+        self.assertIsNotNone(linked["full"])
+        self.assertEqual(linked["full"], linked["note"])
+
     def test_conflicting_national_ids_veto_shared_phone(self):
         detections = [
             detect("a", {"name": "Meera Kapoor", "phone": "7000012345", "aadhaar": "234512340909"}),

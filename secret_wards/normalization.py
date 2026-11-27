@@ -155,7 +155,8 @@ def name_form(value: str) -> tuple[str, ...]:
               if token not in _TITLES]
     if len(tokens) > 1 and tokens[-1] in _FAMILIAR_SUFFIXES:
         tokens.pop()
-    names = tuple(sorted(_name_sound(token) for token in tokens))
+    # This spelling retains the final vowel in the same surname.
+    names = tuple(sorted(_name_sound("pandey" if token == "pandeya" else token) for token in tokens))
     return names if 0 < len(names) <= 6 and any(len(token) > 1 for token in names) else ()
 
 
