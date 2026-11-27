@@ -1,107 +1,78 @@
 # ZeroTrust
 
-ZeroTrust is an offline Python command-line tool for preparing synthetic
-healthcare records for research. It replaces direct identifiers, links records
-that belong to the same patient, and reduces the detail in dates, ages and
-locations while preserving clinical values such as diagnoses, doses and vital
-signs.
+ZeroTrust is an offline command-line tool for de-identifying synthetic
+healthcare records. It removes recognised identifiers, links records when
+there is enough evidence of a shared patient, and preserves clinical values
+for research. It runs on Python 3.11 or later on Linux and macOS, with no
+runtime dependencies beyond the standard library.
 
-The CLI accepts CSV, TSV, plain text, JSON and supported FHIR R4 JSON layouts.
-It detects identifiers in structured fields and in English, Hindi and Hinglish
-text. Use synthetic data only.
+![Animated terminal demo showing three sanitised files, one quarantined file and four exported records](docs/assets/zerotrust-terminal.gif)
 
 ## Quick start
 
-Use Python 3.11 or later on Linux or macOS. The current build uses the Python
-standard library. From the repository root, run:
+Run the bundled synthetic example from the repository root:
 
 ```sh
 RAKSHA_SECRET=local-demo-key python3 main.py \
   --input tests/fixtures/input \
   --output my_output
+
+python3 -m json.tool my_output/report.json
 ```
 
-Use an empty or nonexistent output directory for each run. The key above is an
-example for the bundled fixtures. Supply your own secret through the
-`RAKSHA_SECRET` environment variable for other runs and keep it out of source
-control. To generate a key for a local shell session, run:
+Use an empty or new output directory for each run. The example key is for the
+bundled demo. For your own synthetic inputs, supply a secret through the
+`RAKSHA_SECRET` environment variable and keep it out of source control.
+To create a key for your current shell session, run:
 
 ```sh
 export RAKSHA_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
-python3 main.py --input tests/fixtures/input --output my_output
 ```
 
-Reuse the same key when you need reproducible pseudonyms and date offsets.
-A missing or blank key causes the CLI to exit with status 2 before creating
-any output.
+Reuse the key when you need consistent output across runs with the same inputs.
 
-## Output
+## Supported inputs and outputs
 
-| Path | Contents |
+| Input | What ZeroTrust processes |
 | --- | --- |
-| `sanitized/` | Records that were successfully processed. |
-| `report.json` | Input SHA-256 digests, processing outcomes, quarantine counts, elapsed time and peak memory. |
-| `records.jsonl` | One entry per exported record with its output path, location and patient pseudonym. Unresolved identities have `patient: null`. |
+| CSV and TSV | Tabular records with a header row |
+| JSON | Structured records, including supported nested layouts |
+| FHIR R4 JSON | Supported healthcare resources and single-patient bundles |
+| Plain text | Notes with identifier patterns in English, Hindi and Hinglish |
 
-Source files remain unchanged. Files that cannot be safely processed are
-accounted for in the report and excluded from the export. For a nonempty input
-directory, the CLI returns a failure status if every file is quarantined.
+ZeroTrust leaves input files unchanged. It writes three outputs:
 
-## Processing model
+| Output | Contents |
+| --- | --- |
+| `sanitized/` | Cleaned files in supported source formats |
+| `report.json` | File hashes, processing outcomes, quarantine reasons, timing and peak memory |
+| `records.jsonl` | Exported record locations and patient pseudonyms. Unresolved identities use `patient: null`. |
 
-1. **Inspect and link.** Inventory inputs, parse records, identify sensitive
-   fields and group records with sufficient evidence of a shared identity.
-2. **Apply policy and export.** Generate keyed pseudonyms and date offsets,
-   apply age and location rules, and write the export and audit reports.
+Malformed or unsupported inputs can be quarantined and are excluded from
+`sanitized/`. A nonempty run that exports no files returns a nonzero exit code.
 
-Two fail-closed rules protect against quiet leaks. **Filenames:** a file keeps its
-name only when every word in the stem is a known document or operations term
-(`secret_wards/file_io.py`); any other name is hash-renamed and the new name is
-recorded in `report.json` and `records.jsonl`. **Birth dates:** a DOB is never
-shifted, because a shifted DOB still reveals the birth year. It is dropped where the
-record already carries an age band, and otherwise generalised to a birth-year band
-as wide as the age band (a plain year in FHIR `birthDate`, which must stay a valid
-date).
+## How it works
 
-[The privacy policy](config/policy.yaml) defines the age-band width, date-shift
-range and location mappings. Linked records receive a consistent date offset
-per patient. Unlinked records receive an offset scoped to the encounter so
-admission and discharge intervals remain intact. Unmapped locations are withheld.
-An ID without a hospital scope can support a match when the full normalised
-name and both encounter dates also agree. Conflicting evidence and ambiguous
-matches stay separate.
+1. Parse the inputs and detect sensitive fields or text spans. Use corroborating
+   evidence to link patient records across files and formats.
+2. Apply [the privacy policy](config/policy.yaml) to sensitive fields, generate
+   keyed patient pseudonyms, validate exports, and write the reports.
 
-The pipeline runs locally without network calls. It keeps raw working data in
-memory and omits direct identifiers and the key from its reports. Protect the
-input directory and host storage separately. Pseudonymised records can still
-carry re-identification risk. The built-in FHIR validator checks resource and
-reference structure. Full profile validation requires an additional validator.
-See [the privacy design notes](docs/privacy-design.md)
-for policy references and limitations.
-The [two-page project brief](docs/brief.pdf) includes the practice results
-and the privacy and clinical preservation trade-offs.
+Date handling preserves encounter intervals where dates are shifted together.
+Age and location rules reduce identifying detail. The built-in FHIR checks cover
+supported structures and references. Full profile validation requires a separate
+validator.
 
-## Development
+ZeroTrust is designed for synthetic data. Its outputs can still carry
+re-identification risk. See the [privacy design notes](docs/privacy-design.md)
+for the controls and their limits.
 
-- `main.py` is the command-line entry point.
-- `secret_wards/contracts.py` defines parsed records and privacy policy targets.
-- `secret_wards/file_io.py` and `secret_wards/adapters/` own parsing, validation
-  and file publication.
-- `secret_wards/detection.py` and `secret_wards/linkage.py` detect sensitive
-  fields and group patient records.
-- `secret_wards/pipeline.py` coordinates processing.
-- `secret_wards/privacy.py` and `secret_wards/reporting.py` implement privacy
-  transformations and output reports.
-- `tests/` contains the synthetic fixtures and CLI checks.
-
-Run the tests with:
+## Verification
 
 ```sh
 python3 -m unittest discover -s tests -v
 ```
 
-The checks run renamed and mixed-format datasets through the CLI and cover
-consistent pseudonyms, unresolved identities, preserved clinical values and
-encounter durations, FHIR references, and quarantine of malformed input. Sanitised
-records and mappings are reproducible for the same input and key. Measured
-runtime and peak memory can vary between runs.
+The suite covers format adapters, multilingual identifier detection, patient
+linkage, repeatable exports, clinical preservation, and quarantine behaviour.
+The animation shows the results of the four-file quick start above.
